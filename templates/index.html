@@ -64,6 +64,7 @@
         <button class="icon-btn" id="new-portfolio-btn" title="New portfolio">+</button>
       </div>
       <button class="icon-btn sound-btn" id="sound-toggle" title="Toggle sound (M)">🔔</button>
+      <button class="icon-btn notify-btn" id="notify-toggle" title="Enable desktop notifications for BUY/SELL">🖥</button>
       <div class="live-pill" id="live-pill" data-state="off">
         <span class="live-dot"></span><span class="live-label">OFFLINE</span>
       </div>
@@ -159,7 +160,10 @@
     <section class="panel" data-panel="holdings">
       <div class="holdings-head">
         <h2>Holdings</h2>
-        <button class="primary-btn" id="add-holding-btn">+ Add position</button>
+        <div class="holdings-actions">
+          <div class="preset-row compact" id="preset-row-inline"></div>
+          <button class="primary-btn" id="add-holding-btn">+ Add position</button>
+        </div>
       </div>
 
       <div class="table-wrap glass-card">
@@ -167,17 +171,17 @@
           <thead>
             <tr>
               <th data-sort="symbol">Symbol</th>
-              <th data-sort="shares" class="num">Shares</th>
-              <th data-sort="cost_basis" class="num">Avg cost</th>
+              <th data-sort="shares" class="num" title="Double-click a shares cell to edit">Shares</th>
+              <th data-sort="cost_basis" class="num" title="Double-click the avg cost cell to edit">Avg cost</th>
               <th data-sort="price" class="num">Last</th>
               <th data-sort="change_pct" class="num">Day</th>
               <th data-sort="value" class="num">Value</th>
               <th data-sort="pl" class="num">P/L $</th>
               <th data-sort="pl_pct" class="num">P/L %</th>
-              <th>Signal</th>
-              <th class="num" title="MA stop (EMA21 × 0.97)">Stop MA</th>
-              <th class="num" title="Volatility stop: price − 2×ATR">Stop ATR</th>
-              <th class="num" title="Average True Range, 14 days">ATR%</th>
+              <th title="Overkill signal — BUY near rising 21 EMA, SELL when extended 8%+ above, HOLD otherwise">Signal</th>
+              <th class="num" title="MA stop (Overkill-style): ~3% under the 21 EMA">Stop MA</th>
+              <th class="num" title="Volatility stop: current price − 2 × ATR(14)">Stop ATR</th>
+              <th class="num" title="ATR(14) as % of price — higher = noisier">ATR%</th>
               <th></th>
             </tr>
           </thead>
@@ -302,11 +306,30 @@
     <div class="modal glass-card">
       <header class="modal-head"><h3>Add position</h3>
         <button class="icon-btn" data-close>✕</button></header>
+
+      <div class="preset-row" id="preset-row"></div>
+
       <form id="add-holding-form" class="form-grid">
-        <label>Symbol<input name="symbol" required placeholder="AAPL / BTC-USD" autocomplete="off" /></label>
-        <label>Shares<input name="shares" type="number" step="any" min="0.0000001" required /></label>
-        <label>Cost basis (avg price)<input name="cost_basis" type="number" step="any" min="0" required /></label>
-        <label class="full">Note<input name="note" placeholder="optional" autocomplete="off" /></label>
+        <label class="full ac-wrap">Symbol
+          <div class="ac-input-row">
+            <input name="symbol" required placeholder="Start typing (AAPL / BTC-USD / Bitcoin)"
+                   autocomplete="off" spellcheck="false" id="symbol-input" />
+            <span class="ac-preview" id="symbol-preview" aria-live="polite"></span>
+          </div>
+          <ul class="ac-list" id="symbol-suggestions" hidden></ul>
+        </label>
+        <label>Shares
+          <input name="shares" type="number" step="any" min="0.0000001" required />
+        </label>
+        <label>Cost basis (avg price)
+          <div class="field-with-action">
+            <input name="cost_basis" type="number" step="any" min="0" required id="cost-basis-input" />
+            <button type="button" class="link-btn" id="use-current-price" title="Use current price">Use last</button>
+          </div>
+        </label>
+        <label class="full">Note
+          <input name="note" placeholder="optional (e.g. 'core', 'swing')" autocomplete="off" />
+        </label>
         <div class="form-error" id="add-holding-error"></div>
         <div class="form-actions">
           <button type="button" class="ghost-btn" data-close>Cancel</button>

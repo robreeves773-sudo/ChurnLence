@@ -13,11 +13,15 @@
     watchlist: loadJSON('churnlence.watchlist', []),
     watchData: {},          // symbol -> quote
     soundOn: loadJSON('churnlence.sound', true),
+    notifyOn: loadJSON('churnlence.notify', false),
+    plannerDefaults: loadJSON('churnlence.planner', { account: 10000, risk_pct: 1, stop_method: 'atr', atr_multiplier: 2 }),
     sortKey: 'value',
     sortDir: -1,
     evtSource: null,
     reconnectDelay: 1000,
     chartSymbol: null,
+    presets: [],
+    suggestionCache: new Map(),
   };
 
   const $ = (sel, root = document) => root.querySelector(sel);
@@ -64,6 +68,40 @@
       heartbeat:   () => blip(2200, 0.02, 'triangle', 0.02),
       unlock() { ensure(); },
     };
+  })();
+
+  // ---------- desktop notifications -----------------------------------------
+  const Notify = (() => {
+    const supported = 'Notification' in window;
+    let iconDataUrl = null;
+    const buildIcon = () => {
+      if (iconDataUrl) return iconDataUrl;
+      const c = document.createElement('canvas'); c.width = 128; c.height = 128;
+      const ctx = c.getContext('2d');
+      const grad = ctx.createLinearGradient(0, 0, 128, 128);
+      grad.addColorStop(0, '#00e5ff'); grad.addColorStop(1, '#ff3d7f');
+      ctx.fillStyle = grad; ctx.fillRect(0, 0, 128, 128);
+      ctx.fillStyle = '#fff'; ctx.font = 'bold 80px sans-serif';
+      ctx.textAlign = 'center'; ctx.textBaseline = 'middle';
+      ctx.fillText('₵', 64, 72);
+      iconDataUrl = c.toDataURL();
+      return iconDataUrl;
+    };
+    const status = () => supported ? Notification.permission : 'unsupported';
+    const request = async () => {
+      if (!supported) return 'unsupported';
+      if (Notification.permission === 'granted') return 'granted';
+      if (Notification.permission === 'denied') return 'denied';
+      return Notification.requestPermission();
+    };
+    const fire = (title, body, tag) => {
+      if (!state.notifyOn || !supported) return;
+      if (Notification.permission !== 'granted') return;
+      try {
+        new Notification(title, { body, tag, icon: buildIcon(), silent: true });
+      } catch { /* noop */ }
+    };
+    return { supported, status, request, fire };
   })();
 
   // ---------- toast ----------------------------------------------------------
@@ -208,8 +246,13 @@
         };
         state.signalFeed.unshift(entry);
         if (state.signalFeed.length > 200) state.signalFeed.pop();
-        if (r.signal === 'BUY') Sound.ding();
-        else if (r.signal === 'SELL') Sound.alert();
+        if (r.signal === 'BUY') {
+          Sound.ding();
+          Notify.fire(`${r.symbol}  →  BUY`, `${r.signal_reason}\n${fmtMoneySm(r.price)}`, `sig-${r.symbol}`);
+        } else if (r.signal === 'SELL') {
+          Sound.alert();
+          Notify.fire(`${r.symbol}  →  SELL`, `${r.signal_reason}\n${fmtMoneySm(r.price)}`, `sig-${r.symbol}`);
+        }
       }
       state.prevSignals[r.symbol] = r.signal;
     }
@@ -253,7 +296,18 @@
     const tbody = $('#holdings-body');
     const rows = [...(snap.rows || [])];
     if (!rows.length) {
-      tbody.innerHTML = `<tr class="empty-row"><td colspan="13">No positions yet — add one to begin.</td></tr>`;
+      tbody.innerHTML = `
+        <tr class="empty-row"><td colspan="13">
+          <div class="empty-quickstart">
+            <h3>Nothing here yet</h3>
+            <p>Pick a basket to get started — you can edit or remove them anytime.</p>
+            <div class="preset-row" id="empty-preset-row"></div>
+            <p style="margin-top:6px;">or <a href="#" id="empty-add-btn" style="color:var(--cyan);">add a single position</a></p>
+          </div>
+        </td></tr>`;
+      renderPresets();
+      const addLink = $('#empty-add-btn');
+      if (addLink) addLink.addEventListener('click', (e) => { e.preventDefault(); openModal('add-holding-modal'); });
       return;
     }
     const dir = state.sortDir, key = state.sortKey;
@@ -271,8 +325,8 @@
       return `
         <tr data-sym="${r.symbol}" data-id="${r.id}">
           <td><span class="sym">${r.symbol}</span><span class="sym-name">${escapeHtml(r.name || '')}</span></td>
-          <td class="num">${fmtNum(r.shares)}</td>
-          <td class="num">${fmtMoneySm(r.cost_basis)}</td>
+          <td class="num editable" data-field="shares" title="Double-click to edit">${fmtNum(r.shares)}</td>
+          <td class="num editable" data-field="cost_basis" title="Double-click to edit">${fmtMoneySm(r.cost_basis)}</td>
           <td class="num price-cell">${r.price != null ? fmtMoneySm(r.price) : '—'}</td>
           <td class="num ${up ? 'up' : 'down'}">${fmtPct(r.change_pct)}</td>
           <td class="num">${fmtMoney(r.value)}</td>
@@ -315,14 +369,57 @@
       });
     });
 
-    // click row → charts tab
+    // click row → charts tab (but skip when clicking an editable cell / button)
     $$('tr[data-sym]', tbody).forEach(tr => {
-      tr.addEventListener('click', () => {
+      tr.addEventListener('click', (e) => {
+        if (e.target.closest('.editable') || e.target.closest('button') || e.target.closest('input')) return;
         state.chartSymbol = tr.dataset.sym;
         $('#chart-symbol-select').value = tr.dataset.sym;
         setTab('charts');
       });
     });
+
+    // inline edit: double-click editable cell → input
+    $$('.editable', tbody).forEach(td => {
+      td.addEventListener('dblclick', (e) => beginInlineEdit(td));
+    });
+  }
+
+  async function beginInlineEdit(td) {
+    if (td.querySelector('input')) return;
+    const tr = td.closest('tr');
+    const id = tr.dataset.id;
+    const field = td.dataset.field;
+    const original = td.textContent.trim().replace(/[$,]/g, '');
+    const input = document.createElement('input');
+    input.type = 'number';
+    input.step = 'any';
+    input.min = field === 'shares' ? '0.0000001' : '0';
+    input.className = 'inline-edit';
+    input.value = original;
+    td.textContent = '';
+    td.appendChild(input);
+    input.focus();
+    input.select();
+    const finish = async (commit) => {
+      if (!td.contains(input)) return;
+      const raw = parseFloat(input.value);
+      if (!commit || !Number.isFinite(raw) || raw < 0) {
+        td.textContent = field === 'shares' ? fmtNum(parseFloat(original)) : fmtMoneySm(parseFloat(original));
+        return;
+      }
+      td.textContent = field === 'shares' ? fmtNum(raw) : fmtMoneySm(raw);
+      try {
+        await api(`/api/holdings/${id}`, { method: 'PATCH', body: JSON.stringify({ [field]: raw }) });
+        Sound.click();
+        await refreshOnce();
+      } catch (err) { toast(err.message, 'error'); }
+    };
+    input.addEventListener('keydown', (e) => {
+      if (e.key === 'Enter') { e.preventDefault(); finish(true); }
+      else if (e.key === 'Escape') { e.preventDefault(); finish(false); }
+    });
+    input.addEventListener('blur', () => finish(true));
   }
 
   function renderSignalBars(snap) {
@@ -336,6 +433,103 @@
     $('#bar-buy').style.width = (counts.BUY / total * 100) + '%';
     $('#bar-hold').style.width = (counts.HOLD / total * 100) + '%';
     $('#bar-sell').style.width = (counts.SELL / total * 100) + '%';
+  }
+
+  // ---------- presets (quick-add baskets) ------------------------------------
+  const PRESET_EMOJI = { mag7: '🧲', index: '📊', crypto: '₿', semis: '🧠' };
+  async function loadPresets() {
+    try {
+      state.presets = await api('/api/presets');
+    } catch { state.presets = []; }
+    renderPresets();
+  }
+  function renderPresets() {
+    const render = (host, compact = false) => {
+      if (!host) return;
+      host.innerHTML = state.presets.map(p => `
+        <button type="button" class="preset-chip" data-preset="${p.id}" title="${escapeHtml(p.description)}">
+          <span class="emoji">${PRESET_EMOJI[p.id] || '⚡'}</span>
+          ${p.name}${compact ? '' : `  <small>${p.symbols.length} symbols</small>`}
+        </button>`).join('');
+      host.querySelectorAll('[data-preset]').forEach(btn => {
+        btn.addEventListener('click', () => addPreset(btn.dataset.preset));
+      });
+    };
+    render($('#preset-row'));
+    render($('#preset-row-inline'), true);
+    render($('#empty-preset-row'));
+  }
+  async function addPreset(id) {
+    const preset = state.presets.find(p => p.id === id);
+    if (!preset || !state.currentPortfolioId) return;
+    Sound.click();
+    try {
+      const items = preset.symbols.map(s => ({ symbol: s, shares: 1, cost_basis: 0 }));
+      const r = await api(`/api/portfolios/${state.currentPortfolioId}/holdings/bulk`,
+        { method: 'POST', body: JSON.stringify({ items }) });
+      const ok = (r.added || []).length;
+      const bad = (r.errors || []).length;
+      if (ok) Sound.ding();
+      closeModal('add-holding-modal');
+      await refreshOnce();
+      toast(`${preset.name}: added ${ok}${bad ? `, ${bad} failed` : ''}`,
+            bad && !ok ? 'error' : 'success');
+    } catch (ex) { toast(ex.message, 'error'); }
+  }
+
+  // ---------- autocomplete --------------------------------------------------
+  let acActiveIdx = -1;
+  let acDebounce = null;
+  async function fetchSuggestions(q) {
+    const key = q.toUpperCase();
+    if (state.suggestionCache.has(key)) return state.suggestionCache.get(key);
+    try {
+      const r = await api(`/api/search?q=${encodeURIComponent(q)}`);
+      state.suggestionCache.set(key, r);
+      return r;
+    } catch { return []; }
+  }
+  function renderSuggestions(list) {
+    const ul = $('#symbol-suggestions');
+    if (!list.length) { ul.hidden = true; ul.innerHTML = ''; return; }
+    ul.hidden = false;
+    ul.innerHTML = list.map((s, i) => `
+      <li data-idx="${i}" data-symbol="${s.symbol}">
+        <span class="ac-sym">${s.symbol}</span>
+        <span class="ac-name">${escapeHtml(s.name || '')}</span>
+        <span class="ac-kind ${s.kind || ''}">${(s.kind || '').toUpperCase()}</span>
+      </li>`).join('');
+    ul.querySelectorAll('li').forEach(li => {
+      li.addEventListener('mousedown', (e) => {
+        e.preventDefault();
+        pickSuggestion(li.dataset.symbol);
+      });
+    });
+    acActiveIdx = -1;
+  }
+  function pickSuggestion(symbol) {
+    const input = $('#symbol-input');
+    input.value = symbol;
+    $('#symbol-suggestions').hidden = true;
+    $('#symbol-preview').textContent = '';
+    autoFillCurrentPrice(symbol);
+    // move focus to shares
+    const form = $('#add-holding-form');
+    form.elements.shares.focus();
+  }
+  async function autoFillCurrentPrice(symbol) {
+    const costInput = $('#cost-basis-input');
+    const preview = $('#symbol-preview');
+    try {
+      const q = await api(`/api/quote/${encodeURIComponent(symbol)}`);
+      preview.textContent = `${fmtMoneySm(q.price)}`;
+      if (!costInput.value || parseFloat(costInput.value) === 0) {
+        costInput.value = q.price;
+      }
+      costInput.dataset.last = q.price;
+    } catch {
+      preview.textContent = 'not found';
+    }
   }
 
   // ---------- concentration / HHI -------------------------------------------
@@ -615,6 +809,13 @@
     $('#sound-toggle').addEventListener('click', toggleSound);
     applySoundIcon();
 
+    // desktop notifications toggle
+    const notifyBtn = $('#notify-toggle');
+    if (notifyBtn) {
+      notifyBtn.addEventListener('click', toggleNotify);
+      applyNotifyIcon();
+    }
+
     // portfolio switcher
     $('#portfolio-select').addEventListener('change', (e) => {
       state.currentPortfolioId = parseInt(e.target.value, 10);
@@ -642,26 +843,103 @@
       } catch (ex) { err.textContent = ex.message; Sound.alert(); }
     });
 
+    // autocomplete wiring
+    const symInput = $('#symbol-input');
+    const symPreview = $('#symbol-preview');
+    const symList = $('#symbol-suggestions');
+    if (symInput) {
+      symInput.addEventListener('input', () => {
+        const q = symInput.value.trim();
+        symPreview.textContent = '';
+        clearTimeout(acDebounce);
+        if (q.length < 1) { symList.hidden = true; symList.innerHTML = ''; return; }
+        acDebounce = setTimeout(async () => {
+          const items = await fetchSuggestions(q);
+          renderSuggestions(items);
+        }, 120);
+      });
+      symInput.addEventListener('keydown', (e) => {
+        const items = symList.querySelectorAll('li');
+        if (!items.length) {
+          if (e.key === 'Enter' && symInput.value.trim()) {
+            // commit raw symbol and fetch price
+            autoFillCurrentPrice(symInput.value.trim().toUpperCase());
+          }
+          return;
+        }
+        if (e.key === 'ArrowDown') {
+          e.preventDefault();
+          acActiveIdx = (acActiveIdx + 1) % items.length;
+        } else if (e.key === 'ArrowUp') {
+          e.preventDefault();
+          acActiveIdx = (acActiveIdx - 1 + items.length) % items.length;
+        } else if (e.key === 'Enter' && acActiveIdx >= 0) {
+          e.preventDefault();
+          pickSuggestion(items[acActiveIdx].dataset.symbol);
+          return;
+        } else if (e.key === 'Escape') {
+          symList.hidden = true;
+          return;
+        } else {
+          return;
+        }
+        items.forEach(li => li.classList.remove('active'));
+        items[acActiveIdx].classList.add('active');
+        items[acActiveIdx].scrollIntoView({ block: 'nearest' });
+      });
+      symInput.addEventListener('blur', () => {
+        // delay so mousedown on suggestion can fire first
+        setTimeout(() => { symList.hidden = true; }, 150);
+      });
+      symInput.addEventListener('change', () => {
+        const v = symInput.value.trim().toUpperCase();
+        if (v) autoFillCurrentPrice(v);
+      });
+    }
+
+    // "Use last" in cost basis
+    const useLastBtn = $('#use-current-price');
+    if (useLastBtn) {
+      useLastBtn.addEventListener('click', () => {
+        const costInput = $('#cost-basis-input');
+        const sym = symInput.value.trim().toUpperCase();
+        if (!sym) return toast('Enter a symbol first', 'info');
+        autoFillCurrentPrice(sym).then(() => {
+          if (costInput.dataset.last) costInput.value = costInput.dataset.last;
+        });
+        Sound.click();
+      });
+    }
+
     // add holding
     $('#add-holding-btn').addEventListener('click', () => { openModal('add-holding-modal'); Sound.click(); });
     $('#add-holding-form').addEventListener('submit', async (e) => {
       e.preventDefault();
       const f = e.target.elements;
-      const payload = {
-        symbol: f.symbol.value.trim(),
-        shares: parseFloat(f.shares.value),
-        cost_basis: parseFloat(f.cost_basis.value),
-        note: f.note.value.trim() || null,
-      };
+      const symbol = f.symbol.value.trim().toUpperCase();
+      let cost = parseFloat(f.cost_basis.value);
       const err = $('#add-holding-error');
       err.textContent = '';
+      // if cost missing, backfill with the current price preview
+      if (!Number.isFinite(cost) || cost <= 0) {
+        const preview = $('#cost-basis-input').dataset.last;
+        if (preview) cost = parseFloat(preview);
+      }
+      const payload = {
+        symbol,
+        shares: parseFloat(f.shares.value),
+        cost_basis: cost,
+        note: f.note.value.trim() || null,
+      };
       try {
         await api(`/api/portfolios/${state.currentPortfolioId}/holdings`,
           { method: 'POST', body: JSON.stringify(payload) });
         closeModal('add-holding-modal');
         e.target.reset();
+        $('#symbol-preview').textContent = '';
+        $('#cost-basis-input').removeAttribute('data-last');
         await refreshOnce();
-        toast(`${payload.symbol.toUpperCase()} added`, 'success');
+        toast(`${symbol} added`, 'success');
         Sound.ding();
       } catch (ex) { err.textContent = ex.message; Sound.alert(); }
     });
@@ -695,6 +973,12 @@
     // planner: show/hide fields per stop_method
     const plannerForm = $('#planner-form');
     if (plannerForm) {
+      // restore saved defaults
+      const d = state.plannerDefaults || {};
+      if (d.account) plannerForm.elements.account.value = d.account;
+      if (d.risk_pct) plannerForm.elements.risk_pct.value = d.risk_pct;
+      if (d.stop_method) plannerForm.elements.stop_method.value = d.stop_method;
+      if (d.atr_multiplier) plannerForm.elements.atr_multiplier.value = d.atr_multiplier;
       const stopSelect = plannerForm.elements.stop_method;
       const syncPlannerFields = () => {
         $$('label[data-stop]', plannerForm).forEach(l => {
@@ -703,6 +987,16 @@
       };
       stopSelect.addEventListener('change', syncPlannerFields);
       syncPlannerFields();
+      // persist on any change
+      plannerForm.addEventListener('change', () => {
+        const fe = plannerForm.elements;
+        saveJSON('churnlence.planner', {
+          account: parseFloat(fe.account.value) || 0,
+          risk_pct: parseFloat(fe.risk_pct.value) || 0,
+          stop_method: fe.stop_method.value,
+          atr_multiplier: parseFloat(fe.atr_multiplier.value) || 2,
+        });
+      });
 
       plannerForm.addEventListener('submit', async (e) => {
         e.preventDefault();
@@ -760,11 +1054,45 @@
     btn.title = state.soundOn ? 'Mute (M)' : 'Unmute (M)';
   }
 
+  async function toggleNotify() {
+    const btn = $('#notify-toggle');
+    if (!Notify.supported) { toast('This browser does not support desktop notifications.', 'error'); return; }
+    if (state.notifyOn) {
+      state.notifyOn = false;
+      saveJSON('churnlence.notify', false);
+      applyNotifyIcon();
+      toast('Desktop notifications off', 'info');
+      return;
+    }
+    const res = await Notify.request();
+    if (res === 'granted') {
+      state.notifyOn = true;
+      saveJSON('churnlence.notify', true);
+      applyNotifyIcon();
+      toast('Desktop notifications on — fires on BUY/SELL signal changes.', 'success');
+      Notify.fire('ChurnLence', 'You will get a desktop alert on BUY/SELL signal transitions.', 'welcome');
+    } else if (res === 'denied') {
+      applyNotifyIcon();
+      toast('Browser blocked notifications. Allow them in site settings and try again.', 'error');
+    }
+  }
+  function applyNotifyIcon() {
+    const btn = $('#notify-toggle');
+    if (!btn) return;
+    const perm = Notify.status();
+    btn.classList.toggle('enabled', state.notifyOn && perm === 'granted');
+    btn.classList.toggle('denied', perm === 'denied');
+    btn.title = (state.notifyOn && perm === 'granted')
+      ? 'Desktop notifications on — click to disable'
+      : perm === 'denied' ? 'Notifications blocked by browser'
+      : 'Enable desktop notifications for BUY/SELL';
+  }
+
   // ---------- boot -----------------------------------------------------------
   async function boot() {
     bind();
     try {
-      await loadPortfolios();
+      await Promise.all([loadPortfolios(), loadPresets()]);
       await refreshOnce();
       openStream();
       refreshWatchlist();

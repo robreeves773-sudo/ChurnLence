@@ -24,6 +24,84 @@ DEMO_MODE = os.environ.get("CHURNLENCE_DEMO", "").lower() in ("1", "true", "yes"
 QUOTE_TTL = 2 if DEMO_MODE else 15  # seconds — shorter in demo so prices tick visibly
 STREAM_INTERVAL = 5  # seconds between SSE pushes
 
+# Curated symbol universe for autocomplete. Covers the usual asks from an
+# individual retail tracker: mega-caps, popular ETFs, and top crypto.
+SYMBOL_UNIVERSE: list[dict] = [
+    # Mag 7 / mega-cap tech
+    {"symbol": "AAPL",  "name": "Apple",          "kind": "stock"},
+    {"symbol": "MSFT",  "name": "Microsoft",      "kind": "stock"},
+    {"symbol": "NVDA",  "name": "NVIDIA",         "kind": "stock"},
+    {"symbol": "GOOGL", "name": "Alphabet",       "kind": "stock"},
+    {"symbol": "AMZN",  "name": "Amazon",         "kind": "stock"},
+    {"symbol": "META",  "name": "Meta Platforms", "kind": "stock"},
+    {"symbol": "TSLA",  "name": "Tesla",          "kind": "stock"},
+    # Popular retail stocks
+    {"symbol": "AMD",   "name": "Advanced Micro Devices", "kind": "stock"},
+    {"symbol": "AVGO",  "name": "Broadcom",       "kind": "stock"},
+    {"symbol": "NFLX",  "name": "Netflix",        "kind": "stock"},
+    {"symbol": "PLTR",  "name": "Palantir",       "kind": "stock"},
+    {"symbol": "COIN",  "name": "Coinbase",       "kind": "stock"},
+    {"symbol": "HOOD",  "name": "Robinhood",      "kind": "stock"},
+    {"symbol": "SOFI",  "name": "SoFi",           "kind": "stock"},
+    {"symbol": "UBER",  "name": "Uber",           "kind": "stock"},
+    {"symbol": "DIS",   "name": "Disney",         "kind": "stock"},
+    {"symbol": "BA",    "name": "Boeing",         "kind": "stock"},
+    {"symbol": "JPM",   "name": "JPMorgan Chase", "kind": "stock"},
+    {"symbol": "V",     "name": "Visa",           "kind": "stock"},
+    {"symbol": "MA",    "name": "Mastercard",     "kind": "stock"},
+    {"symbol": "COST",  "name": "Costco",         "kind": "stock"},
+    {"symbol": "WMT",   "name": "Walmart",        "kind": "stock"},
+    {"symbol": "XOM",   "name": "Exxon Mobil",    "kind": "stock"},
+    {"symbol": "BRK-B", "name": "Berkshire B",    "kind": "stock"},
+    # ETFs
+    {"symbol": "SPY",   "name": "SPDR S&P 500",   "kind": "etf"},
+    {"symbol": "QQQ",   "name": "Invesco QQQ",    "kind": "etf"},
+    {"symbol": "VOO",   "name": "Vanguard S&P 500", "kind": "etf"},
+    {"symbol": "VTI",   "name": "Vanguard Total Market", "kind": "etf"},
+    {"symbol": "IWM",   "name": "Russell 2000",   "kind": "etf"},
+    {"symbol": "DIA",   "name": "Dow Jones",      "kind": "etf"},
+    {"symbol": "GLD",   "name": "SPDR Gold",      "kind": "etf"},
+    {"symbol": "SLV",   "name": "iShares Silver", "kind": "etf"},
+    {"symbol": "ARKK",  "name": "ARK Innovation", "kind": "etf"},
+    {"symbol": "SMH",   "name": "Semiconductors", "kind": "etf"},
+    {"symbol": "TLT",   "name": "20+ Year Treasury", "kind": "etf"},
+    # Crypto
+    {"symbol": "BTC-USD", "name": "Bitcoin",  "kind": "crypto"},
+    {"symbol": "ETH-USD", "name": "Ethereum", "kind": "crypto"},
+    {"symbol": "SOL-USD", "name": "Solana",   "kind": "crypto"},
+    {"symbol": "XRP-USD", "name": "XRP",      "kind": "crypto"},
+    {"symbol": "ADA-USD", "name": "Cardano",  "kind": "crypto"},
+    {"symbol": "DOGE-USD","name": "Dogecoin", "kind": "crypto"},
+    {"symbol": "LINK-USD","name": "Chainlink","kind": "crypto"},
+    {"symbol": "AVAX-USD","name": "Avalanche","kind": "crypto"},
+    {"symbol": "MATIC-USD","name": "Polygon", "kind": "crypto"},
+    {"symbol": "DOT-USD", "name": "Polkadot", "kind": "crypto"},
+]
+
+# Preset baskets — one-click add for the "I just want to get started" user.
+PRESET_BASKETS: dict[str, dict] = {
+    "mag7": {
+        "name": "Magnificent 7",
+        "description": "Mega-cap tech — AAPL, MSFT, NVDA, GOOGL, AMZN, META, TSLA",
+        "symbols": ["AAPL", "MSFT", "NVDA", "GOOGL", "AMZN", "META", "TSLA"],
+    },
+    "index": {
+        "name": "Core index",
+        "description": "SPY + QQQ + VTI — broad US exposure",
+        "symbols": ["SPY", "QQQ", "VTI"],
+    },
+    "crypto": {
+        "name": "Crypto top 5",
+        "description": "BTC, ETH, SOL, XRP, ADA",
+        "symbols": ["BTC-USD", "ETH-USD", "SOL-USD", "XRP-USD", "ADA-USD"],
+    },
+    "semis": {
+        "name": "Semis",
+        "description": "NVDA, AMD, AVGO, SMH",
+        "symbols": ["NVDA", "AMD", "AVGO", "SMH"],
+    },
+}
+
 _quote_cache: dict[str, tuple[float, dict]] = {}
 _quote_lock = threading.Lock()
 
@@ -590,6 +668,77 @@ def quote(symbol: str):
     if q is None:
         return jsonify({"error": "not found"}), 404
     return jsonify(q.as_dict())
+
+
+@app.route("/api/search")
+def search():
+    """Autocomplete. Matches prefix first, then substring, capped at 10 results."""
+    q = (request.args.get("q") or "").upper().strip()
+    if not q:
+        return jsonify([])
+    prefix, substring = [], []
+    for item in SYMBOL_UNIVERSE:
+        sym = item["symbol"]
+        name = item["name"].upper()
+        if sym.startswith(q) or name.startswith(q):
+            prefix.append(item)
+        elif q in sym or q in name:
+            substring.append(item)
+    out = (prefix + substring)[:10]
+    # If nothing matches the universe, let yfinance try (unless in demo).
+    if not out and not DEMO_MODE and len(q) <= 8:
+        try:
+            info = yf.Ticker(q).info
+            nm = info.get("shortName") or info.get("longName")
+            if nm:
+                out.append({"symbol": q, "name": nm, "kind": "stock"})
+        except Exception:
+            pass
+    return jsonify(out)
+
+
+@app.route("/api/presets")
+def presets():
+    return jsonify([
+        {"id": key, **value} for key, value in PRESET_BASKETS.items()
+    ])
+
+
+@app.route("/api/portfolios/<int:pid>/holdings/bulk", methods=["POST"])
+def bulk_holdings(pid: int):
+    """Bulk-add. Body: {items: [{symbol, shares, cost_basis}, ...]}
+    If cost_basis is omitted or 0, current price is used."""
+    data = request.get_json(force=True, silent=True) or {}
+    items = data.get("items") or []
+    if not isinstance(items, list) or not items:
+        return jsonify({"error": "items must be a non-empty list"}), 400
+    db = get_db()
+    added, errors = [], []
+    for item in items:
+        symbol = str(item.get("symbol") or "").upper().strip()
+        try:
+            shares = float(item.get("shares", 1))
+        except (TypeError, ValueError):
+            shares = 1.0
+        cost_raw = item.get("cost_basis")
+        q = fetch_quote(symbol)
+        if q is None or not symbol:
+            errors.append({"symbol": symbol, "error": "not found"})
+            continue
+        try:
+            cost = float(cost_raw) if cost_raw not in (None, "") else q.price
+        except (TypeError, ValueError):
+            cost = q.price
+        if shares <= 0 or cost < 0:
+            errors.append({"symbol": symbol, "error": "invalid shares/cost"})
+            continue
+        cur = db.execute(
+            "INSERT INTO holdings(portfolio_id, symbol, shares, cost_basis, note) VALUES (?, ?, ?, ?, ?)",
+            (pid, symbol, shares, cost, item.get("note")),
+        )
+        added.append({"id": cur.lastrowid, "symbol": symbol, "shares": shares, "cost_basis": cost})
+    db.commit()
+    return jsonify({"added": added, "errors": errors})
 
 
 @app.route("/api/position-size", methods=["POST"])
