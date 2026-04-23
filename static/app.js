@@ -191,6 +191,7 @@
     renderHoldings(snap);
     renderSignalBars(snap);
     renderAllocation(snap);
+    renderConcentration(snap);
     renderTickerTape(snap);
     updateChartSymbolSelector(snap);
     if (state.chartSymbol && $('.panel.active')?.dataset.panel === 'charts') renderDetailChart();
@@ -252,7 +253,7 @@
     const tbody = $('#holdings-body');
     const rows = [...(snap.rows || [])];
     if (!rows.length) {
-      tbody.innerHTML = `<tr class="empty-row"><td colspan="12">No positions yet — add one to begin.</td></tr>`;
+      tbody.innerHTML = `<tr class="empty-row"><td colspan="13">No positions yet — add one to begin.</td></tr>`;
       return;
     }
     const dir = state.sortDir, key = state.sortKey;
@@ -279,7 +280,8 @@
           <td class="num ${plUp ? 'up' : 'down'}">${fmtPct(r.pl_pct)}</td>
           <td><span class="sig-chip ${(r.signal||'hold').toLowerCase()}" title="${escapeHtml(r.signal_reason||'')}">${r.signal || 'HOLD'}</span></td>
           <td class="num">${r.stop_loss != null ? fmtMoneySm(r.stop_loss) : '—'}</td>
-          <td class="num">${r.ema21 != null ? fmtMoneySm(r.ema21) : '—'}</td>
+          <td class="num">${r.stop_atr != null ? fmtMoneySm(r.stop_atr) : '—'}</td>
+          <td class="num">${r.atr_pct != null ? fmtPct(r.atr_pct) : '—'}</td>
           <td class="num"><button class="row-del" data-del="${r.id}" title="Remove">✕</button></td>
         </tr>`;
     }).join('');
@@ -334,6 +336,28 @@
     $('#bar-buy').style.width = (counts.BUY / total * 100) + '%';
     $('#bar-hold').style.width = (counts.HOLD / total * 100) + '%';
     $('#bar-sell').style.width = (counts.SELL / total * 100) + '%';
+  }
+
+  // ---------- concentration / HHI -------------------------------------------
+  function renderConcentration(snap) {
+    const c = snap.concentration || { hhi: 0, grade: '—', warnings: [], top_weight: 0 };
+    const valEl = $('#hhi-value');
+    tweenNumber(valEl, c.hhi || 0, v => Math.round(v).toLocaleString('en-US'), 500);
+    const grade = $('#hhi-grade');
+    grade.textContent = c.grade;
+    grade.className = 'risk-grade ' +
+      (c.hhi < 1500 ? 'diversified' : c.hhi < 2500 ? 'moderate' : 'concentrated');
+    // meter fill: scale 0..10000 → 0..100% of meter, but clamp at 100
+    const pct = Math.min(100, (c.hhi || 0) / 100);
+    $('#hhi-fill').style.width = pct + '%';
+    const ul = $('#hhi-warnings');
+    if (!c.warnings || !c.warnings.length) {
+      ul.innerHTML = '<li class="empty">No single-name risks detected.</li>';
+    } else {
+      ul.innerHTML = c.warnings.map(w =>
+        `<li><strong>${w.symbol}</strong> — ${w.weight.toFixed(1)}% of portfolio</li>`
+      ).join('');
+    }
   }
 
   // ---------- allocation doughnut -------------------------------------------
@@ -430,7 +454,7 @@
       const chg = q.change_pct ?? 0;
       $('#chart-sub').innerHTML =
         `<span class="${chg >= 0 ? 'up' : 'down'}" style="color:${chg>=0?'var(--success)':'var(--danger)'}">${chg>=0?'▲':'▼'} ${fmtPct(chg)}</span>
-         &nbsp; EMA21 ${fmtMoneySm(q.ema21)} · Stop ${fmtMoneySm(q.stop_loss)} · <span class="sig-chip ${(q.signal||'hold').toLowerCase()}">${q.signal}</span>`;
+         &nbsp; EMA21 ${fmtMoneySm(q.ema21)} · Stop MA ${fmtMoneySm(q.stop_loss)} · Stop ATR ${fmtMoneySm(q.stop_atr)} · ATR% ${q.atr_pct != null ? fmtPct(q.atr_pct) : '—'} · <span class="sig-chip ${(q.signal||'hold').toLowerCase()}">${q.signal}</span>`;
 
       const hist = q.history || [];
       const labels = hist.map(h => h.date);
@@ -466,6 +490,37 @@
     } catch (err) {
       toast(`Chart: ${err.message}`, 'error');
     }
+  }
+
+  // ---------- planner result -------------------------------------------------
+  function renderPlannerResult(r, payload) {
+    const card = $('#planner-result');
+    card.hidden = false;
+    $('#planner-sym').textContent = r.symbol;
+    const sigEl = $('#planner-signal');
+    sigEl.textContent = r.signal || 'HOLD';
+    sigEl.className = 'sig-chip ' + (r.signal || 'hold').toLowerCase();
+    $('#pr-shares').textContent = r.shares.toLocaleString('en-US', { maximumFractionDigits: 4 });
+    $('#pr-value').textContent = fmtMoney(r.position_value);
+    $('#pr-pct').textContent = r.pct_of_account.toFixed(2) + '%';
+    $('#pr-entry').textContent = fmtMoneySm(r.price);
+    $('#pr-stop').textContent = fmtMoneySm(r.stop) + '  (' + r.stop_label + ')';
+    $('#pr-dist').textContent = fmtMoneySm(r.stop_distance) + '  (' + r.stop_distance_pct.toFixed(2) + '%)';
+    $('#pr-risk').textContent = fmtMoney(r.risk_dollars);
+    $('#pr-atr').textContent = (r.atr != null ? fmtMoneySm(r.atr) : '—') +
+      '  /  ' + (r.atr_pct != null ? r.atr_pct.toFixed(2) + '%' : '—');
+
+    const note = $('#planner-note');
+    const parts = [];
+    if (r.exceeds_account) {
+      parts.push('⚠️ Position value exceeds account — would require leverage.');
+      note.classList.add('warn');
+    } else {
+      note.classList.remove('warn');
+    }
+    parts.push(`Risk: ${fmtMoney(r.risk_dollars)} (${payload.risk_pct}% of ${fmtMoney(payload.account)}) capped by the stop at ${fmtMoneySm(r.stop)}.`);
+    if (r.signal === 'SELL') parts.push('Overkill signal is SELL — entering a long here is counter-trend.');
+    note.innerHTML = parts.map(escapeHtml).join(' ');
   }
 
   // ---------- watchlist ------------------------------------------------------
@@ -546,7 +601,7 @@
     // keyboard shortcuts
     window.addEventListener('keydown', (e) => {
       if (document.activeElement && /INPUT|TEXTAREA|SELECT/.test(document.activeElement.tagName)) return;
-      const map = { '1':'overview','2':'holdings','3':'charts','4':'signals','5':'watchlist' };
+      const map = { '1':'overview','2':'holdings','3':'charts','4':'signals','5':'watchlist','6':'planner' };
       if (map[e.key]) { setTab(map[e.key]); Sound.click(); }
       else if (e.key.toLowerCase() === 'n') { openModal('add-holding-modal'); Sound.click(); }
       else if (e.key.toLowerCase() === 'm') toggleSound();
@@ -636,6 +691,43 @@
       Sound.ding();
       toast(`${sym} added to watchlist`, 'success');
     });
+
+    // planner: show/hide fields per stop_method
+    const plannerForm = $('#planner-form');
+    if (plannerForm) {
+      const stopSelect = plannerForm.elements.stop_method;
+      const syncPlannerFields = () => {
+        $$('label[data-stop]', plannerForm).forEach(l => {
+          l.hidden = l.dataset.stop !== stopSelect.value;
+        });
+      };
+      stopSelect.addEventListener('change', syncPlannerFields);
+      syncPlannerFields();
+
+      plannerForm.addEventListener('submit', async (e) => {
+        e.preventDefault();
+        const f = e.target.elements;
+        const payload = {
+          symbol: f.symbol.value.trim().toUpperCase(),
+          account: parseFloat(f.account.value),
+          risk_pct: parseFloat(f.risk_pct.value),
+          stop_method: f.stop_method.value,
+          atr_multiplier: parseFloat(f.atr_multiplier.value || 2),
+          custom_stop: f.custom_stop ? parseFloat(f.custom_stop.value || 0) : null,
+        };
+        const err = $('#planner-error');
+        err.textContent = '';
+        try {
+          const r = await api('/api/position-size', { method: 'POST', body: JSON.stringify(payload) });
+          renderPlannerResult(r, payload);
+          Sound.ding();
+        } catch (ex) {
+          err.textContent = ex.message;
+          $('#planner-result').hidden = true;
+          Sound.alert();
+        }
+      });
+    }
 
     // sort
     $$('#holdings-table th[data-sort]').forEach(th => {

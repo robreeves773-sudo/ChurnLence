@@ -108,8 +108,11 @@ class Quote:
     ema21: float | None
     ema50: float | None
     ema200: float | None
-    stop_loss: float | None  # Overkill-style: just below EMA21
-    signal: str  # BUY / SELL / HOLD
+    atr: float | None             # 14-period Average True Range
+    atr_pct: float | None         # ATR as % of price (volatility gauge)
+    stop_loss: float | None       # Overkill MA-style: ~3% below EMA21
+    stop_atr: float | None        # Volatility-aware: price - 2×ATR
+    signal: str                   # BUY / SELL / HOLD
     signal_reason: str
     history: list[dict]
     fetched_at: str
@@ -128,6 +131,37 @@ def _ema(values: list[float], period: int) -> list[float]:
         ema = v * k + ema * (1 - k)
         out.append(ema)
     return out
+
+
+def _atr(highs: list[float], lows: list[float], closes: list[float], period: int = 14) -> list[float]:
+    """Wilder's Average True Range."""
+    n = len(closes)
+    if n == 0 or len(highs) != n or len(lows) != n:
+        return []
+    trs: list[float] = [highs[0] - lows[0]]
+    for i in range(1, n):
+        tr = max(
+            highs[i] - lows[i],
+            abs(highs[i] - closes[i - 1]),
+            abs(lows[i] - closes[i - 1]),
+        )
+        trs.append(tr)
+    out: list[float] = []
+    if n < period:
+        # fall back to running mean
+        running = 0.0
+        for i, tr in enumerate(trs):
+            running += tr
+            out.append(running / (i + 1))
+        return out
+    seed = sum(trs[:period]) / period
+    out.extend([seed] * period)  # pad so indexes align with closes
+    out[period - 1] = seed
+    atr = seed
+    for i in range(period, n):
+        atr = (atr * (period - 1) + trs[i]) / period
+        out.append(atr)
+    return out[:n]
 
 
 def _overkill_signal(price: float, e9: float | None, e21: float | None, e50: float | None, e200: float | None) -> tuple[str, str]:
@@ -151,24 +185,29 @@ def _overkill_signal(price: float, e9: float | None, e21: float | None, e50: flo
     return "HOLD", "Mixed EMAs — no clean setup"
 
 
-def _demo_history(symbol: str) -> tuple[list[str], list[float], str, str]:
+def _demo_history(symbol: str) -> tuple[list[str], list[float], list[float], list[float], str, str]:
     """Deterministic synthetic OHLC history for offline/demo use."""
     seed = int(hashlib.sha256(symbol.encode()).hexdigest(), 16) % (2**32)
     rng = random.Random(seed)
     base = 50 + rng.random() * 900
     n = 260
     closes: list[float] = []
+    highs: list[float] = []
+    lows: list[float] = []
     p = base
     drift = (rng.random() - 0.4) * 0.0008
     for _ in range(n):
         shock = rng.gauss(0, 0.018)
         p = max(1.0, p * (1 + drift + shock))
         closes.append(p)
+        intraday = abs(rng.gauss(0, 0.012)) + 0.004
+        highs.append(p * (1 + intraday))
+        lows.append(p * (1 - intraday))
     today = datetime.now(timezone.utc).date()
     dates = [(today - timedelta(days=n - 1 - i)).strftime("%Y-%m-%d") for i in range(n)]
     currency = "USD"
     name = f"{symbol} (demo)"
-    return dates, closes, currency, name
+    return dates, highs, lows, closes, currency, name
 
 
 def fetch_quote(symbol: str, force: bool = False) -> Quote | None:
@@ -183,8 +222,11 @@ def fetch_quote(symbol: str, force: bool = False) -> Quote | None:
 
     dates: list[str] = []
     closes: list[float] = []
+    highs: list[float] = []
+    lows: list[float] = []
     currency = "USD"
     name = symbol
+    ticker = None
 
     if not DEMO_MODE:
         try:
@@ -192,13 +234,15 @@ def fetch_quote(symbol: str, force: bool = False) -> Quote | None:
             hist = ticker.history(period="1y", interval="1d", auto_adjust=False)
             if not hist.empty:
                 closes = [float(x) for x in hist["Close"].tolist()]
+                highs = [float(x) for x in hist["High"].tolist()]
+                lows = [float(x) for x in hist["Low"].tolist()]
                 dates = [d.strftime("%Y-%m-%d") for d in hist.index]
         except Exception as exc:
             app.logger.warning("yfinance history failed for %s: %s", symbol, exc)
 
     if not closes:
         if DEMO_MODE:
-            dates, closes, currency, name = _demo_history(symbol)
+            dates, highs, lows, closes, currency, name = _demo_history(symbol)
         else:
             return None
 
@@ -206,6 +250,7 @@ def fetch_quote(symbol: str, force: bool = False) -> Quote | None:
     ema21 = _ema(closes, 21)
     ema50 = _ema(closes, 50)
     ema200 = _ema(closes, 200)
+    atr_series = _atr(highs, lows, closes, 14) if highs and lows else []
 
     price = closes[-1]
     prev_close = closes[-2] if len(closes) > 1 else price
@@ -239,7 +284,10 @@ def fetch_quote(symbol: str, force: bool = False) -> Quote | None:
     e21 = ema21[-1] if ema21 else None
     e50 = ema50[-1] if len(ema50) >= 50 else None
     e200 = ema200[-1] if len(ema200) >= 200 else None
-    stop = round(e21 * 0.97, 4) if e21 else None
+    atr_last = atr_series[-1] if atr_series else None
+    atr_pct = (atr_last / price * 100) if (atr_last and price) else None
+    stop_ma = round(e21 * 0.97, 4) if e21 else None
+    stop_atr = round(price - atr_last * 2, 4) if atr_last else None
     signal, reason = _overkill_signal(price, e9, e21, e50, e200)
 
     history = []
@@ -252,6 +300,7 @@ def fetch_quote(symbol: str, force: bool = False) -> Quote | None:
             "ema21": round(ema21[i], 4) if ema21 else None,
             "ema50": round(ema50[i], 4) if i >= 49 else None,
             "ema200": round(ema200[i], 4) if i >= 199 else None,
+            "atr": round(atr_series[i], 4) if atr_series else None,
         })
 
     quote = Quote(
@@ -265,7 +314,10 @@ def fetch_quote(symbol: str, force: bool = False) -> Quote | None:
         ema21=round(e21, 4) if e21 else None,
         ema50=round(e50, 4) if e50 else None,
         ema200=round(e200, 4) if e200 else None,
-        stop_loss=stop,
+        atr=round(atr_last, 4) if atr_last else None,
+        atr_pct=round(atr_pct, 3) if atr_pct else None,
+        stop_loss=stop_ma,
+        stop_atr=stop_atr,
         signal=signal,
         signal_reason=reason,
         history=history,
@@ -280,6 +332,97 @@ def fetch_quote(symbol: str, force: bool = False) -> Quote | None:
 # ---------------------------------------------------------------------------
 # Portfolio math
 # ---------------------------------------------------------------------------
+
+def _concentration(rows: list[dict], total_value: float) -> dict:
+    """Herfindahl-Hirschman Index + threshold-based warnings."""
+    if total_value <= 0:
+        return {"hhi": 0, "grade": "—", "warnings": [], "top_weight": 0.0}
+    weights = []
+    for r in rows:
+        v = r.get("value") or 0
+        if v <= 0:
+            continue
+        w_pct = v / total_value * 100
+        weights.append((r["symbol"], w_pct))
+    hhi = round(sum((w * w) for _, w in weights), 1)
+    if hhi < 1500:
+        grade = "Well diversified"
+    elif hhi < 2500:
+        grade = "Moderately concentrated"
+    else:
+        grade = "Highly concentrated"
+    warnings: list[dict] = []
+    for sym, w in sorted(weights, key=lambda x: -x[1]):
+        if w > 10:
+            warnings.append({"symbol": sym, "weight": round(w, 2),
+                             "message": f"{sym} is {w:.1f}% of the portfolio (>10% single-name risk)"})
+    top_weight = max((w for _, w in weights), default=0.0)
+    return {
+        "hhi": hhi,
+        "grade": grade,
+        "warnings": warnings,
+        "top_weight": round(top_weight, 2),
+        "positions": len(weights),
+    }
+
+
+def _position_size(symbol: str, account: float, risk_pct: float,
+                   stop_method: str, custom_stop: float | None = None,
+                   atr_multiplier: float = 2.0) -> dict:
+    """Compute share count for a given account size, risk %, and stop method.
+
+    stop_method: "atr" | "ma" | "custom"
+    """
+    q = fetch_quote(symbol)
+    if q is None:
+        return {"error": f"symbol {symbol} not found"}
+    if account <= 0 or risk_pct <= 0 or risk_pct > 100:
+        return {"error": "account must be > 0 and 0 < risk_pct <= 100"}
+    risk_dollars = account * (risk_pct / 100)
+
+    price = q.price or 0
+    if stop_method == "atr":
+        if q.atr is None:
+            return {"error": "ATR not available for this symbol"}
+        stop = price - q.atr * atr_multiplier
+        stop_label = f"price − {atr_multiplier}×ATR"
+    elif stop_method == "ma":
+        if q.stop_loss is None:
+            return {"error": "MA stop not available — need EMA21"}
+        stop = q.stop_loss
+        stop_label = "EMA21 × 0.97"
+    elif stop_method == "custom":
+        if custom_stop is None or custom_stop >= price:
+            return {"error": "custom_stop must be below current price"}
+        stop = custom_stop
+        stop_label = "custom"
+    else:
+        return {"error": "stop_method must be atr|ma|custom"}
+
+    distance = price - stop
+    if distance <= 0:
+        return {"error": "stop is not below price — refusing to size"}
+    shares = risk_dollars / distance
+    position_value = shares * price
+    pct_of_account = position_value / account * 100
+    return {
+        "symbol": q.symbol,
+        "price": price,
+        "atr": q.atr,
+        "atr_pct": q.atr_pct,
+        "stop": round(stop, 4),
+        "stop_label": stop_label,
+        "stop_distance": round(distance, 4),
+        "stop_distance_pct": round(distance / price * 100, 3),
+        "risk_dollars": round(risk_dollars, 2),
+        "shares": round(shares, 4),
+        "position_value": round(position_value, 2),
+        "pct_of_account": round(pct_of_account, 2),
+        "exceeds_account": position_value > account,
+        "signal": q.signal,
+        "signal_reason": q.signal_reason,
+    }
+
 
 def _portfolio_snapshot(portfolio_id: int) -> dict:
     with direct_db() as db:
@@ -332,17 +475,22 @@ def _portfolio_snapshot(portfolio_id: int) -> dict:
             "ema21": q.ema21,
             "ema50": q.ema50,
             "ema200": q.ema200,
+            "atr": q.atr,
+            "atr_pct": q.atr_pct,
             "stop_loss": q.stop_loss,
+            "stop_atr": q.stop_atr,
             "signal": q.signal,
             "signal_reason": q.signal_reason,
             "note": h["note"],
         })
 
+    concentration = _concentration(rows, total_value)
     total_pl = total_value - total_cost
     total_pl_pct = (total_pl / total_cost * 100) if total_cost else 0.0
     return {
         "portfolio": {"id": portfolio["id"], "name": portfolio["name"]},
         "rows": rows,
+        "concentration": concentration,
         "totals": {
             "value": round(total_value, 2),
             "cost": round(total_cost, 2),
@@ -442,6 +590,25 @@ def quote(symbol: str):
     if q is None:
         return jsonify({"error": "not found"}), 404
     return jsonify(q.as_dict())
+
+
+@app.route("/api/position-size", methods=["POST"])
+def position_size_route():
+    data = request.get_json(force=True, silent=True) or {}
+    try:
+        symbol = str(data.get("symbol") or "").strip()
+        account = float(data.get("account") or 0)
+        risk_pct = float(data.get("risk_pct") or 0)
+        stop_method = (data.get("stop_method") or "atr").lower()
+        custom_stop = data.get("custom_stop")
+        custom_stop = float(custom_stop) if custom_stop not in (None, "") else None
+        atr_mult = float(data.get("atr_multiplier") or 2.0)
+    except (TypeError, ValueError):
+        return jsonify({"error": "invalid numeric input"}), 400
+    result = _position_size(symbol, account, risk_pct, stop_method, custom_stop, atr_mult)
+    if "error" in result:
+        return jsonify(result), 400
+    return jsonify(result)
 
 
 @app.route("/api/portfolios/<int:pid>/stream")

@@ -52,6 +52,9 @@
       <button class="tab" data-tab="watchlist" role="tab">
         <span class="tab-key">5</span>Watchlist
       </button>
+      <button class="tab" data-tab="planner" role="tab">
+        <span class="tab-key">6</span>Planner
+      </button>
       <div class="tab-underline" aria-hidden="true"></div>
     </nav>
 
@@ -125,6 +128,31 @@
           </p>
         </article>
       </div>
+
+      <article class="glass-card risk-card" id="risk-card" style="margin-top:18px;">
+        <header class="card-head">
+          <h2>Concentration risk</h2>
+          <span class="card-sub">Herfindahl-Hirschman Index</span>
+        </header>
+        <div class="risk-grid">
+          <div class="risk-stat">
+            <div class="risk-stat-label">HHI</div>
+            <div class="risk-stat-value" id="hhi-value">—</div>
+            <div class="risk-grade" id="hhi-grade">—</div>
+          </div>
+          <div class="risk-meter-wrap">
+            <div class="risk-meter">
+              <div class="risk-meter-fill" id="hhi-fill"></div>
+              <div class="risk-meter-mark" style="left:15%"><span>1500</span></div>
+              <div class="risk-meter-mark" style="left:25%"><span>2500</span></div>
+            </div>
+            <div class="risk-labels">
+              <span>Diversified</span><span>Moderate</span><span>Concentrated</span>
+            </div>
+          </div>
+          <ul class="risk-warnings" id="hhi-warnings"><li class="empty">No single-name risks detected.</li></ul>
+        </div>
+      </article>
     </section>
 
     <!-- HOLDINGS TAB ------------------------------------------------------- -->
@@ -147,13 +175,14 @@
               <th data-sort="pl" class="num">P/L $</th>
               <th data-sort="pl_pct" class="num">P/L %</th>
               <th>Signal</th>
-              <th class="num">Stop</th>
-              <th class="num">EMA21</th>
+              <th class="num" title="MA stop (EMA21 × 0.97)">Stop MA</th>
+              <th class="num" title="Volatility stop: price − 2×ATR">Stop ATR</th>
+              <th class="num" title="Average True Range, 14 days">ATR%</th>
               <th></th>
             </tr>
           </thead>
           <tbody id="holdings-body">
-            <tr class="empty-row"><td colspan="12">No positions yet — add one to begin.</td></tr>
+            <tr class="empty-row"><td colspan="13">No positions yet — add one to begin.</td></tr>
           </tbody>
         </table>
       </div>
@@ -202,11 +231,70 @@
         <div class="empty-row">Add a symbol to start watching.</div>
       </div>
     </section>
+
+    <!-- PLANNER TAB -------------------------------------------------------- -->
+    <section class="panel" data-panel="planner">
+      <div class="holdings-head">
+        <h2>Position-size planner</h2>
+        <span class="card-sub">Size trades by volatility, not by feel</span>
+      </div>
+      <div class="planner-grid">
+        <article class="glass-card">
+          <header class="card-head"><h2>Trade inputs</h2></header>
+          <form id="planner-form" class="planner-form">
+            <label>Symbol
+              <input name="symbol" placeholder="AAPL / BTC-USD" autocomplete="off" required />
+            </label>
+            <label>Account size ($)
+              <input name="account" type="number" step="any" min="1" value="10000" required />
+            </label>
+            <label>Risk per trade (%)
+              <input name="risk_pct" type="number" step="any" min="0.01" max="100" value="1" required />
+            </label>
+            <label>Stop method
+              <select name="stop_method">
+                <option value="atr">ATR (volatility)</option>
+                <option value="ma">MA (EMA21 × 0.97, Overkill)</option>
+                <option value="custom">Custom price</option>
+              </select>
+            </label>
+            <label data-stop="atr">ATR multiplier
+              <input name="atr_multiplier" type="number" step="0.1" min="0.5" value="2" />
+            </label>
+            <label data-stop="custom" hidden>Custom stop price
+              <input name="custom_stop" type="number" step="any" min="0" />
+            </label>
+            <div class="form-error" id="planner-error"></div>
+            <div class="form-actions" style="grid-column: span 2;">
+              <button type="submit" class="primary-btn">Calculate</button>
+            </div>
+          </form>
+        </article>
+
+        <article class="glass-card planner-result" id="planner-result" hidden>
+          <header class="card-head">
+            <h2 id="planner-sym">—</h2>
+            <span class="sig-chip hold" id="planner-signal">—</span>
+          </header>
+          <div class="planner-numbers">
+            <div><span class="n-lbl">Shares</span><span class="n-val" id="pr-shares">—</span></div>
+            <div><span class="n-lbl">Position value</span><span class="n-val" id="pr-value">—</span></div>
+            <div><span class="n-lbl">% of account</span><span class="n-val" id="pr-pct">—</span></div>
+            <div><span class="n-lbl">Entry</span><span class="n-val" id="pr-entry">—</span></div>
+            <div><span class="n-lbl">Stop</span><span class="n-val" id="pr-stop">—</span></div>
+            <div><span class="n-lbl">Stop distance</span><span class="n-val" id="pr-dist">—</span></div>
+            <div><span class="n-lbl">Risk at stop</span><span class="n-val" id="pr-risk">—</span></div>
+            <div><span class="n-lbl">ATR / ATR%</span><span class="n-val" id="pr-atr">—</span></div>
+          </div>
+          <p class="planner-note" id="planner-note"></p>
+        </article>
+      </div>
+    </section>
   </main>
 
   <footer class="footer">
     <span>Data via yfinance · Quotes may be delayed ~15 min during market hours</span>
-    <span class="kbd-hint">Shortcuts · <kbd>1</kbd>–<kbd>5</kbd> tabs · <kbd>N</kbd> new · <kbd>M</kbd> mute</span>
+    <span class="kbd-hint">Shortcuts · <kbd>1</kbd>–<kbd>6</kbd> tabs · <kbd>N</kbd> new · <kbd>M</kbd> mute</span>
   </footer>
 
   <!-- ADD HOLDING MODAL -->
