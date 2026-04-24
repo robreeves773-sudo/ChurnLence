@@ -23,6 +23,26 @@
 }
 
 * { box-sizing: border-box; }
+
+/* PWA / Android polish — respect safe-area insets, suppress pull-to-refresh
+   on mobile so swiping down doesn't blow away the SSE stream, kill double-tap
+   zoom, and forbid iOS-style bounce. */
+html, body {
+  overscroll-behavior-y: contain;
+  -webkit-text-size-adjust: 100%;
+  touch-action: manipulation;
+}
+body {
+  padding-top: env(safe-area-inset-top);
+  padding-left: env(safe-area-inset-left);
+  padding-right: env(safe-area-inset-right);
+  padding-bottom: env(safe-area-inset-bottom);
+}
+/* When running as an installed PWA, add a bit more breathing room below */
+@media (display-mode: standalone) {
+  .footer { padding-bottom: calc(env(safe-area-inset-bottom) + 8px); }
+  .topbar { padding-top: calc(10px + env(safe-area-inset-top)); }
+}
 html, body { margin: 0; padding: 0; height: 100%; }
 
 body {
@@ -631,8 +651,9 @@ select:focus, input:focus {
 }
 @media (max-width: 760px) {
   .topbar { grid-template-columns: 1fr; gap: 12px; padding: 12px 16px; }
-  .tabs { justify-self: stretch; overflow-x: auto; }
-  .tab { flex-shrink: 0; }
+  .tabs { justify-self: stretch; overflow-x: auto; scrollbar-width: none; -webkit-overflow-scrolling: touch; }
+  .tabs::-webkit-scrollbar { display: none; }
+  .tab { flex-shrink: 0; min-height: 44px; padding: 10px 14px; }
   .main { padding: 14px; }
   .hero-grid { grid-template-columns: 1fr 1fr; gap: 10px; }
   .hero-value { font-size: 20px; }
@@ -647,8 +668,19 @@ select:focus, input:focus {
   .alloc-wrap { grid-template-columns: 1fr; }
   .ticker-tape { font-size: 12px; }
   .chart-card { padding: 14px; }
-  .portfolio-picker { order: -1; }
-  .modal { padding: 18px; }
+  .portfolio-picker { order: -1; flex-wrap: wrap; }
+  .modal { padding: 18px; max-width: 100%; margin: 10px; }
+  /* larger tap targets (Google Material: 48dp minimum) */
+  .icon-btn, .primary-btn, .ghost-btn, .row-act, .row-del { min-height: 44px; min-width: 44px; }
+  .row-act, .row-del { padding: 8px 12px; font-size: 12px; }
+  input, select, textarea { min-height: 44px; font-size: 16px; /* prevents iOS/Chrome zoom-on-focus */ }
+  .hcard { padding: 16px; }
+  .hcard-actions button { flex: 1; }
+  .sig-chip { padding: 6px 10px; }
+  /* Modals slide up from the bottom on mobile */
+  .modal-backdrop { align-items: flex-end; }
+  .modal { border-radius: 18px 18px 0 0; width: 100%; }
+  .menu { right: 10px; left: 10px; min-width: 0; }
 }
 @media (max-width: 480px) {
   .hero-grid { grid-template-columns: 1fr; }

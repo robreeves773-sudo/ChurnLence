@@ -1468,15 +1468,65 @@
       : 'Enable desktop notifications for BUY/SELL';
   }
 
+  // ---------- PWA: service worker + install prompt --------------------------
+  function registerServiceWorker() {
+    if (!('serviceWorker' in navigator)) return;
+    // Only register on https (or localhost) — browsers require secure context.
+    const secure = location.protocol === 'https:' || location.hostname === 'localhost' || location.hostname === '127.0.0.1';
+    if (!secure) return;
+    navigator.serviceWorker.register('/static/sw.js').catch(err => console.warn('SW register failed:', err));
+  }
+
+  let deferredInstall = null;
+  function wireInstallPrompt() {
+    window.addEventListener('beforeinstallprompt', (e) => {
+      e.preventDefault();
+      deferredInstall = e;
+      // Surface an inline "Install app" button in the topbar
+      const btn = document.createElement('button');
+      btn.className = 'icon-btn install-btn';
+      btn.id = 'install-btn';
+      btn.title = 'Install ChurnLence as an app';
+      btn.textContent = '⤓ Install';
+      btn.style.cssText = 'padding:6px 12px; width:auto; font-size:12px; font-weight:600;';
+      btn.addEventListener('click', async () => {
+        if (!deferredInstall) return;
+        deferredInstall.prompt();
+        const { outcome } = await deferredInstall.userChoice;
+        if (outcome === 'accepted') toast('Installed — check your home screen', 'success');
+        deferredInstall = null;
+        btn.remove();
+      });
+      const host = document.querySelector('.topbar-actions');
+      if (host) host.insertBefore(btn, host.firstChild);
+    });
+    window.addEventListener('appinstalled', () => {
+      toast('ChurnLence added to your home screen', 'success');
+      document.getElementById('install-btn')?.remove();
+    });
+  }
+
+  // Handle deep-link tab via ?tab=holdings|planner|...
+  function applyLaunchTab() {
+    const params = new URLSearchParams(location.search);
+    const t = params.get('tab');
+    if (t && ['overview','holdings','charts','signals','watchlist','planner','backtest'].includes(t)) {
+      setTab(t);
+    }
+  }
+
   // ---------- boot -----------------------------------------------------------
   async function boot() {
     bind();
+    registerServiceWorker();
+    wireInstallPrompt();
     try {
       await Promise.all([loadPortfolios(), loadPresets()]);
       await refreshOnce();
       openStream();
       refreshWatchlist();
       refreshTransactions();
+      applyLaunchTab();
       setInterval(refreshWatchlist, 30000);   // watchlist refreshes every 30s
       setInterval(refreshTransactions, 60000); // transactions every minute
       setTimeout(moveTabUnderline, 50);
