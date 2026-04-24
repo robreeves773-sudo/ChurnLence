@@ -61,6 +61,9 @@
       <button class="tab" data-tab="planner" role="tab">
         <span class="tab-key">6</span>Planner
       </button>
+      <button class="tab" data-tab="backtest" role="tab">
+        <span class="tab-key">7</span>Backtest
+      </button>
       <div class="tab-underline" aria-hidden="true"></div>
     </nav>
 
@@ -68,6 +71,14 @@
       <div class="portfolio-picker">
         <select id="portfolio-select" aria-label="Portfolio"></select>
         <button class="icon-btn" id="new-portfolio-btn" title="New portfolio">+</button>
+        <button class="icon-btn" id="portfolio-menu-btn" title="Portfolio settings">⋯</button>
+        <div class="menu" id="portfolio-menu" hidden>
+          <button type="button" data-pm="rename">Rename portfolio</button>
+          <button type="button" data-pm="alerts">Email alerts…</button>
+          <button type="button" data-pm="import">Import CSV…</button>
+          <button type="button" data-pm="export">Export CSV</button>
+          <button type="button" data-pm="delete" class="danger">Delete portfolio</button>
+        </div>
       </div>
       <button class="icon-btn sound-btn" id="sound-toggle" title="Toggle sound (M)">🔔</button>
       <button class="icon-btn notify-btn" id="notify-toggle" title="Enable desktop notifications for BUY/SELL">🖥</button>
@@ -168,6 +179,7 @@
         <h2>Holdings</h2>
         <div class="holdings-actions">
           <div class="preset-row compact" id="preset-row-inline"></div>
+          <button class="ghost-btn" id="import-csv-btn" title="Import positions from Fidelity / Schwab / Robinhood CSV export">⤓ Import CSV</button>
           <button class="primary-btn" id="add-holding-btn">+ Add position</button>
         </div>
       </div>
@@ -195,6 +207,8 @@
             <tr class="empty-row"><td colspan="13">No positions yet — add one to begin.</td></tr>
           </tbody>
         </table>
+        <!-- Mobile card stack — hidden on desktop, shown ≤760px -->
+        <div class="holdings-cards" id="holdings-cards"></div>
       </div>
     </section>
 
@@ -226,6 +240,26 @@
       <ul class="signal-feed glass-card" id="signal-feed">
         <li class="empty">Waiting for signal transitions…</li>
       </ul>
+      <div class="holdings-head" style="margin-top:22px;">
+        <h2>Realized P/L</h2>
+        <span class="card-sub" id="realized-sub">Sells closed so far</span>
+      </div>
+      <article class="glass-card" id="transactions-card">
+        <div class="table-wrap">
+          <table class="holdings-table" id="transactions-table">
+            <thead>
+              <tr>
+                <th>Date</th><th>Symbol</th><th>Method</th>
+                <th class="num">Shares</th><th class="num">Cost</th><th class="num">Sell</th>
+                <th class="num">Proceeds</th><th class="num">Realized P/L</th>
+              </tr>
+            </thead>
+            <tbody id="transactions-body">
+              <tr class="empty-row"><td colspan="8">No sells recorded yet — close a position from Holdings to start the tax log.</td></tr>
+            </tbody>
+          </table>
+        </div>
+      </article>
     </section>
 
     <!-- WATCHLIST TAB ------------------------------------------------------ -->
@@ -240,6 +274,65 @@
       <div class="glass-card watch-grid" id="watch-grid">
         <div class="empty-row">Add a symbol to start watching.</div>
       </div>
+    </section>
+
+    <!-- BACKTEST TAB ------------------------------------------------------- -->
+    <section class="panel" data-panel="backtest">
+      <div class="holdings-head">
+        <h2>Backtest</h2>
+        <span class="card-sub">Replay the Overkill EMA signal on a single symbol — no prediction claims, just arithmetic.</span>
+      </div>
+      <div class="planner-grid">
+        <article class="glass-card">
+          <header class="card-head"><h2>Inputs</h2></header>
+          <form id="backtest-form" class="planner-form">
+            <label>Symbol
+              <input name="symbol" placeholder="AAPL / SPY / BTC-USD" autocomplete="off" required />
+            </label>
+            <label>Starting cash ($)
+              <input name="starting_cash" type="number" step="any" min="1" value="10000" required />
+            </label>
+            <label>Years of history
+              <select name="years">
+                <option value="0.25">3 months</option>
+                <option value="0.5">6 months</option>
+                <option value="1" selected>1 year</option>
+                <option value="2">2 years</option>
+                <option value="3">3 years</option>
+              </select>
+            </label>
+            <div class="form-error" id="backtest-error"></div>
+            <div class="form-actions" style="grid-column: span 2;">
+              <button type="submit" class="primary-btn">Run backtest</button>
+            </div>
+          </form>
+        </article>
+        <article class="glass-card" id="backtest-summary" hidden>
+          <header class="card-head"><h2 id="bt-symbol">—</h2><span class="card-sub" id="bt-window">—</span></header>
+          <div class="planner-numbers">
+            <div><span class="n-lbl">Strategy return</span><span class="n-val" id="bt-strat">—</span></div>
+            <div><span class="n-lbl">Buy-and-hold</span><span class="n-val" id="bt-bh">—</span></div>
+            <div><span class="n-lbl">Out-performance</span><span class="n-val" id="bt-diff">—</span></div>
+            <div><span class="n-lbl">Final equity</span><span class="n-val" id="bt-final">—</span></div>
+            <div><span class="n-lbl">Round trips</span><span class="n-val" id="bt-trips">—</span></div>
+            <div><span class="n-lbl">Win rate</span><span class="n-val" id="bt-winrate">—</span></div>
+          </div>
+          <p class="planner-note">Signals act on each daily close. No slippage, no fees, no taxes.</p>
+        </article>
+      </div>
+      <article class="glass-card chart-card" id="backtest-chart-card" hidden style="margin-top:18px;">
+        <header class="card-head"><h2>Equity curve</h2><span class="card-sub">Strategy vs. buy-and-hold</span></header>
+        <canvas id="backtest-chart" height="260"></canvas>
+      </article>
+      <article class="glass-card" id="backtest-trades-card" hidden style="margin-top:18px;">
+        <header class="card-head"><h2>Trade log</h2><span class="card-sub" id="bt-trades-count">—</span></header>
+        <div class="table-wrap">
+          <table class="holdings-table">
+            <thead><tr><th>Date</th><th>Action</th><th class="num">Price</th><th class="num">Shares</th><th class="num">Value</th></tr></thead>
+            <tbody id="backtest-trades-body"></tbody>
+          </table>
+        </div>
+      </article>
     </section>
 
     <!-- PLANNER TAB -------------------------------------------------------- -->
@@ -356,6 +449,109 @@
         <div class="form-actions">
           <button type="button" class="ghost-btn" data-close>Cancel</button>
           <button type="submit" class="primary-btn">Create</button>
+        </div>
+      </form>
+    </div>
+  </div>
+
+  <!-- SELL MODAL -->
+  <div class="modal-backdrop" id="sell-modal" hidden>
+    <div class="modal glass-card">
+      <header class="modal-head"><h3>Close position</h3><button class="icon-btn" data-close>✕</button></header>
+      <form id="sell-form" class="form-grid">
+        <div class="full sell-head">
+          <span class="sym-big" id="sell-symbol">—</span>
+          <span class="card-sub" id="sell-holdings">—</span>
+        </div>
+        <label>Shares to sell
+          <input name="shares" type="number" step="any" min="0.0000001" required />
+        </label>
+        <label>Sell price
+          <div class="field-with-action">
+            <input name="sell_price" type="number" step="any" min="0" required id="sell-price-input" />
+            <button type="button" class="link-btn" id="sell-use-last">Use last</button>
+          </div>
+        </label>
+        <label class="full">Cost method
+          <select name="method">
+            <option value="FIFO">FIFO — first-in first-out (default, IRS)</option>
+            <option value="LIFO">LIFO — last-in first-out</option>
+          </select>
+        </label>
+        <div class="form-error" id="sell-error"></div>
+        <div class="form-actions">
+          <button type="button" class="ghost-btn" data-close>Cancel</button>
+          <button type="submit" class="primary-btn">Record sell</button>
+        </div>
+      </form>
+    </div>
+  </div>
+
+  <!-- IMPORT CSV MODAL -->
+  <div class="modal-backdrop" id="import-csv-modal" hidden>
+    <div class="modal glass-card" style="max-width:620px;">
+      <header class="modal-head"><h3>Import from CSV</h3><button class="icon-btn" data-close>✕</button></header>
+      <form id="import-csv-form" class="form-grid">
+        <div class="full" style="color:var(--ink-mute); font-size:13px;">
+          Works with exports from <strong>Fidelity</strong>, <strong>Schwab</strong>,
+          <strong>Robinhood</strong>, <strong>Vanguard</strong> — we match columns
+          fuzzily. Minimum: <code>Symbol</code> + <code>Shares</code>.
+          If cost basis is missing we use the current price.
+        </div>
+        <label class="full">CSV file
+          <input type="file" name="file" id="import-csv-file" accept=".csv,text/csv" />
+        </label>
+        <label class="full">…or paste CSV text
+          <textarea name="csv" id="import-csv-text" rows="6" placeholder="Symbol,Shares,Average Cost
+AAPL,25,180
+NVDA,15,120"></textarea>
+        </label>
+        <div class="form-error" id="import-csv-error"></div>
+        <div class="form-actions">
+          <button type="button" class="ghost-btn" data-close>Cancel</button>
+          <button type="submit" class="primary-btn">Import</button>
+        </div>
+      </form>
+    </div>
+  </div>
+
+  <!-- RENAME PORTFOLIO MODAL -->
+  <div class="modal-backdrop" id="rename-portfolio-modal" hidden>
+    <div class="modal glass-card">
+      <header class="modal-head"><h3>Rename portfolio</h3><button class="icon-btn" data-close>✕</button></header>
+      <form id="rename-portfolio-form" class="form-grid">
+        <label class="full">New name
+          <input name="name" required autocomplete="off" />
+        </label>
+        <div class="form-error" id="rename-portfolio-error"></div>
+        <div class="form-actions">
+          <button type="button" class="ghost-btn" data-close>Cancel</button>
+          <button type="submit" class="primary-btn">Rename</button>
+        </div>
+      </form>
+    </div>
+  </div>
+
+  <!-- ALERTS MODAL -->
+  <div class="modal-backdrop" id="alerts-modal" hidden>
+    <div class="modal glass-card">
+      <header class="modal-head"><h3>Email alerts</h3><button class="icon-btn" data-close>✕</button></header>
+      <form id="alerts-form" class="form-grid">
+        <div class="full" style="color:var(--ink-mute); font-size:13px;">
+          We email you when a holding's signal flips BUY↔HOLD↔SELL. Checks run every 5 minutes
+          server-side, so this works even when your browser is closed.
+        </div>
+        <label class="full">Email address
+          <input name="email" type="email" required placeholder="you@example.com" />
+        </label>
+        <label class="full" style="display:flex; flex-direction:row; align-items:center; gap:10px;">
+          <input name="enabled" type="checkbox" style="width:auto;" />
+          <span>Send me emails on signal transitions for this portfolio</span>
+        </label>
+        <div class="form-error" id="alerts-status"></div>
+        <div class="form-actions">
+          <button type="button" class="ghost-btn" data-close>Close</button>
+          <button type="submit" class="primary-btn">Save</button>
         </div>
       </form>
     </div>

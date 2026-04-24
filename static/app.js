@@ -341,9 +341,59 @@
           <td class="num">${r.stop_loss != null ? fmtMoneySm(r.stop_loss) : '—'}</td>
           <td class="num">${r.stop_atr != null ? fmtMoneySm(r.stop_atr) : '—'}</td>
           <td class="num">${r.atr_pct != null ? fmtPct(r.atr_pct) : '—'}</td>
-          <td class="num"><button class="row-del" data-del="${r.id}" title="Remove">✕</button></td>
+          <td class="num row-actions">
+            <button class="row-act row-sell" data-sell="${r.symbol}" title="Sell / close position">Sell</button>
+            <button class="row-del" data-del="${r.id}" title="Remove (no tax record)">✕</button>
+          </td>
         </tr>`;
     }).join('');
+
+    // mobile card stack — rendered alongside, CSS controls visibility
+    const cardHost = $('#holdings-cards');
+    if (cardHost) {
+      cardHost.innerHTML = rows.map(r => {
+        const up = (r.change_pct || 0) >= 0;
+        const plUp = (r.pl || 0) >= 0;
+        return `
+          <div class="hcard" data-sym="${r.symbol}" data-id="${r.id}">
+            <div class="hcard-head">
+              <div>
+                <div class="hcard-sym">${r.symbol}</div>
+                <div class="hcard-name">${escapeHtml(r.name || '')}</div>
+              </div>
+              <span class="sig-chip ${(r.signal||'hold').toLowerCase()}">${r.signal || 'HOLD'}</span>
+            </div>
+            <div class="hcard-grid">
+              <div><span class="n-lbl">Last</span><span class="n-val">${fmtMoneySm(r.price)}</span></div>
+              <div><span class="n-lbl">Day</span><span class="n-val ${up?'up':'down'}">${fmtPct(r.change_pct)}</span></div>
+              <div><span class="n-lbl">Shares</span><span class="n-val">${fmtNum(r.shares)}</span></div>
+              <div><span class="n-lbl">Avg cost</span><span class="n-val">${fmtMoneySm(r.cost_basis)}</span></div>
+              <div><span class="n-lbl">Value</span><span class="n-val">${fmtMoney(r.value)}</span></div>
+              <div><span class="n-lbl">P/L</span><span class="n-val ${plUp?'up':'down'}">${fmtMoney(r.pl)} · ${fmtPct(r.pl_pct)}</span></div>
+            </div>
+            <div class="hcard-actions">
+              <button class="row-act row-sell" data-sell="${r.symbol}">Sell</button>
+              <button class="ghost-btn" data-chart="${r.symbol}">Chart</button>
+              <button class="row-del" data-del="${r.id}" title="Remove">✕</button>
+            </div>
+          </div>`;
+      }).join('');
+      $$('[data-chart]', cardHost).forEach(b => b.addEventListener('click', (e) => {
+        e.stopPropagation();
+        state.chartSymbol = b.dataset.chart;
+        $('#chart-symbol-select').value = b.dataset.chart;
+        setTab('charts');
+      }));
+      $$('[data-del]', cardHost).forEach(btn => btn.addEventListener('click', async (e) => {
+        e.stopPropagation();
+        if (!confirm('Remove this position without recording a sell? (No tax log will be written.)')) return;
+        try { await api(`/api/holdings/${btn.dataset.del}`, { method: 'DELETE' }); toast('Removed', 'success'); await refreshOnce(); }
+        catch (err) { toast(err.message, 'error'); }
+      }));
+      $$('[data-sell]', cardHost).forEach(btn => btn.addEventListener('click', (e) => {
+        e.stopPropagation(); openSellModal(btn.dataset.sell);
+      }));
+    }
 
     // flash price on change
     for (const r of rows) {
@@ -364,6 +414,7 @@
     $$('.row-del', tbody).forEach(btn => {
       btn.addEventListener('click', async (e) => {
         e.stopPropagation();
+        if (!confirm('Remove this position without recording a sell? (No tax log will be written — use the Sell button for realized gains.)')) return;
         const id = btn.dataset.del;
         Sound.click();
         try {
@@ -371,6 +422,15 @@
           toast('Position removed', 'success');
           await refreshOnce();
         } catch (err) { toast(err.message, 'error'); }
+      });
+    });
+
+    // sell handlers
+    $$('.row-sell', tbody).forEach(btn => {
+      btn.addEventListener('click', (e) => {
+        e.stopPropagation();
+        Sound.click();
+        openSellModal(btn.dataset.sell);
       });
     });
 
@@ -789,6 +849,76 @@
   function openModal(id) { $(`#${id}`).hidden = false; }
   function closeModal(id) { $(`#${id}`).hidden = true; }
 
+  // ---------- sell / close position ------------------------------------------
+  function openSellModal(symbol) {
+    const rows = (state.snapshot?.rows || []).filter(r => r.symbol === symbol && !r.error);
+    if (!rows.length) { toast(`No holdings of ${symbol}`, 'error'); return; }
+    const totalShares = rows.reduce((s, r) => s + (r.shares || 0), 0);
+    const last = rows[0].price || 0;
+    $('#sell-symbol').textContent = symbol;
+    $('#sell-holdings').textContent = `${fmtNum(totalShares)} shares held · last ${fmtMoneySm(last)}`;
+    const form = $('#sell-form');
+    form.elements.shares.value = totalShares;
+    form.elements.shares.max = totalShares;
+    form.elements.sell_price.value = last || '';
+    form.elements.sell_price.dataset.last = String(last || '');
+    $('#sell-error').textContent = '';
+    form.dataset.symbol = symbol;
+    openModal('sell-modal');
+    setTimeout(() => form.elements.shares.select(), 50);
+  }
+
+  async function refreshTransactions() {
+    if (!state.currentPortfolioId) return;
+    try {
+      const r = await api(`/api/portfolios/${state.currentPortfolioId}/transactions`);
+      renderTransactions(r.transactions || [], r.total_realized || 0);
+    } catch (err) { /* non-fatal */ }
+  }
+
+  function renderTransactions(txs, totalRealized) {
+    const tbody = $('#transactions-body');
+    $('#realized-sub').textContent = `${txs.length} sells · ${fmtMoney(totalRealized)} realized`;
+    if (!txs.length) {
+      tbody.innerHTML = '<tr class="empty-row"><td colspan="8">No sells recorded yet — close a position from Holdings to start the tax log.</td></tr>';
+      return;
+    }
+    tbody.innerHTML = txs.map(t => {
+      const plUp = (t.realized_pl || 0) >= 0;
+      const d = (t.sold_at || '').split('T')[0] || (t.sold_at || '').split(' ')[0] || t.sold_at || '';
+      return `
+        <tr>
+          <td>${escapeHtml(d)}</td>
+          <td><span class="sym">${t.symbol}</span></td>
+          <td>${t.method}</td>
+          <td class="num">${fmtNum(t.shares)}</td>
+          <td class="num">${fmtMoneySm(t.cost_basis)}</td>
+          <td class="num">${fmtMoneySm(t.sell_price)}</td>
+          <td class="num">${fmtMoney(t.proceeds)}</td>
+          <td class="num ${plUp ? 'up' : 'down'}">${fmtMoney(t.realized_pl)}</td>
+        </tr>`;
+    }).join('');
+  }
+
+  // ---------- CSV export -----------------------------------------------------
+  function exportCsv() {
+    const rows = state.snapshot?.rows || [];
+    if (!rows.length) { toast('Nothing to export', 'info'); return; }
+    const header = 'Symbol,Shares,Cost Basis,Price,Value,P/L,Signal';
+    const body = rows.map(r =>
+      [r.symbol, r.shares, r.cost_basis, r.price, r.value, r.pl, r.signal].join(',')
+    ).join('\n');
+    const blob = new Blob([header + '\n' + body], { type: 'text/csv' });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    const name = (state.portfolios.find(p => p.id === state.currentPortfolioId)?.name || 'portfolio').replace(/\s+/g, '-');
+    a.href = url;
+    a.download = `churnlence-${name}-${new Date().toISOString().split('T')[0]}.csv`;
+    a.click();
+    URL.revokeObjectURL(url);
+    toast('Exported', 'success');
+  }
+
   // ---------- event wiring ---------------------------------------------------
   function bind() {
     // tabs
@@ -801,7 +931,7 @@
     // keyboard shortcuts
     window.addEventListener('keydown', (e) => {
       if (document.activeElement && /INPUT|TEXTAREA|SELECT/.test(document.activeElement.tagName)) return;
-      const map = { '1':'overview','2':'holdings','3':'charts','4':'signals','5':'watchlist','6':'planner' };
+      const map = { '1':'overview','2':'holdings','3':'charts','4':'signals','5':'watchlist','6':'planner','7':'backtest' };
       if (map[e.key]) { setTab(map[e.key]); Sound.click(); }
       else if (e.key.toLowerCase() === 'n') { openModal('add-holding-modal'); Sound.click(); }
       else if (e.key.toLowerCase() === 'm') toggleSound();
@@ -827,6 +957,7 @@
       state.currentPortfolioId = parseInt(e.target.value, 10);
       openStream();
       refreshOnce();
+      refreshTransactions();
     });
 
     // new portfolio
@@ -1045,6 +1176,249 @@
       state.chartSymbol = e.target.value;
       renderDetailChart();
     });
+
+    // ----- sell modal -----
+    $('#sell-form').addEventListener('submit', async (e) => {
+      e.preventDefault();
+      const f = e.target;
+      const symbol = f.dataset.symbol;
+      const payload = {
+        symbol,
+        shares: parseFloat(f.elements.shares.value),
+        sell_price: parseFloat(f.elements.sell_price.value),
+        method: f.elements.method.value,
+      };
+      const err = $('#sell-error');
+      err.textContent = '';
+      try {
+        const r = await api(`/api/portfolios/${state.currentPortfolioId}/sell`,
+          { method: 'POST', body: JSON.stringify(payload) });
+        closeModal('sell-modal');
+        const pl = r.realized_pl || 0;
+        toast(`${symbol}: sold ${r.shares} @ ${fmtMoneySm(r.sell_price)} · realized ${fmtMoney(pl)}`,
+          pl >= 0 ? 'success' : 'info', 5000);
+        await refreshOnce();
+        await refreshTransactions();
+        Sound.ding();
+      } catch (ex) { err.textContent = ex.message; Sound.alert(); }
+    });
+    $('#sell-use-last').addEventListener('click', () => {
+      const inp = $('#sell-price-input');
+      if (inp.dataset.last) inp.value = inp.dataset.last;
+    });
+
+    // ----- import CSV -----
+    $('#import-csv-btn').addEventListener('click', () => { openModal('import-csv-modal'); Sound.click(); });
+    $('#import-csv-form').addEventListener('submit', async (e) => {
+      e.preventDefault();
+      const fileInput = $('#import-csv-file');
+      const textInput = $('#import-csv-text');
+      const err = $('#import-csv-error');
+      err.textContent = '';
+      let payload = null;
+      let opts = { method: 'POST' };
+      if (fileInput.files.length) {
+        const fd = new FormData();
+        fd.append('file', fileInput.files[0]);
+        opts.body = fd;  // no Content-Type header — let browser set multipart boundary
+        opts.headers = {};
+      } else if (textInput.value.trim()) {
+        payload = { csv: textInput.value };
+        opts.body = JSON.stringify(payload);
+        opts.headers = { 'Content-Type': 'application/json' };
+      } else {
+        err.textContent = 'Attach a CSV file or paste CSV text.';
+        return;
+      }
+      try {
+        const r = await fetch(`/api/portfolios/${state.currentPortfolioId}/import`, opts);
+        const data = await r.json();
+        if (!r.ok) throw new Error(data.error || 'Import failed');
+        const added = data.added?.length || 0;
+        const errs = data.errors?.length || 0;
+        toast(`Imported ${added} position${added===1?'':'s'}${errs?` · ${errs} error${errs===1?'':'s'}`:''}`, added ? 'success' : 'info', 5000);
+        if (errs && data.errors[0]) console.warn('import errors', data.errors);
+        closeModal('import-csv-modal');
+        e.target.reset();
+        $('#import-csv-text').value = '';
+        await refreshOnce();
+        Sound.ding();
+      } catch (ex) { err.textContent = ex.message; Sound.alert(); }
+    });
+
+    // ----- portfolio menu (rename / delete / alerts / import / export) -----
+    const pmBtn = $('#portfolio-menu-btn');
+    const pmMenu = $('#portfolio-menu');
+    if (pmBtn) {
+      pmBtn.addEventListener('click', (e) => {
+        e.stopPropagation();
+        pmMenu.hidden = !pmMenu.hidden;
+      });
+      document.addEventListener('click', (e) => {
+        if (!pmMenu.hidden && !pmMenu.contains(e.target) && e.target !== pmBtn) pmMenu.hidden = true;
+      });
+      pmMenu.addEventListener('click', async (e) => {
+        const action = e.target.dataset?.pm;
+        if (!action) return;
+        pmMenu.hidden = true;
+        if (action === 'rename') {
+          const p = state.portfolios.find(x => x.id === state.currentPortfolioId);
+          $('#rename-portfolio-form').elements.name.value = p ? p.name : '';
+          $('#rename-portfolio-error').textContent = '';
+          openModal('rename-portfolio-modal');
+        } else if (action === 'delete') {
+          if (!confirm('Delete this portfolio and all its holdings + transactions? This cannot be undone.')) return;
+          try {
+            await api(`/api/portfolios/${state.currentPortfolioId}`, { method: 'DELETE' });
+            toast('Portfolio deleted', 'success');
+            state.currentPortfolioId = null;
+            await loadPortfolios();
+            state.currentPortfolioId = state.portfolios[0]?.id || null;
+            if (state.currentPortfolioId) $('#portfolio-select').value = state.currentPortfolioId;
+            openStream(); refreshOnce(); refreshTransactions();
+          } catch (ex) { toast(ex.message, 'error'); }
+        } else if (action === 'alerts') {
+          openAlertsModal();
+        } else if (action === 'import') {
+          openModal('import-csv-modal');
+        } else if (action === 'export') {
+          exportCsv();
+        }
+      });
+    }
+
+    $('#rename-portfolio-form').addEventListener('submit', async (e) => {
+      e.preventDefault();
+      const name = e.target.elements.name.value.trim();
+      const err = $('#rename-portfolio-error');
+      err.textContent = '';
+      try {
+        await api(`/api/portfolios/${state.currentPortfolioId}`,
+          { method: 'PATCH', body: JSON.stringify({ name }) });
+        await loadPortfolios();
+        $('#portfolio-select').value = state.currentPortfolioId;
+        closeModal('rename-portfolio-modal');
+        toast(`Renamed to "${name}"`, 'success');
+      } catch (ex) { err.textContent = ex.message; Sound.alert(); }
+    });
+
+    // ----- alerts (email prefs) -----
+    async function openAlertsModal() {
+      try {
+        const p = await api(`/api/portfolios/${state.currentPortfolioId}/alerts`);
+        const f = $('#alerts-form');
+        f.elements.email.value = p.email || '';
+        f.elements.enabled.checked = !!p.enabled;
+        const status = $('#alerts-status');
+        status.style.color = '';
+        status.textContent = p.smtp_configured
+          ? 'SMTP is configured on the server — alerts will send.'
+          : 'SMTP is NOT configured on the server. Set SMTP_HOST / SMTP_USER / SMTP_PASS env vars to enable sending. You can still save the preference.';
+        if (!p.smtp_configured) status.style.color = 'var(--warn, #ffb84d)';
+        openModal('alerts-modal');
+      } catch (ex) { toast(ex.message, 'error'); }
+    }
+    $('#alerts-form').addEventListener('submit', async (e) => {
+      e.preventDefault();
+      const payload = {
+        email: e.target.elements.email.value.trim(),
+        enabled: e.target.elements.enabled.checked,
+      };
+      try {
+        await api(`/api/portfolios/${state.currentPortfolioId}/alerts`,
+          { method: 'POST', body: JSON.stringify(payload) });
+        closeModal('alerts-modal');
+        toast(payload.enabled ? 'Email alerts enabled' : 'Email alerts saved', 'success');
+      } catch (ex) { toast(ex.message, 'error'); }
+    });
+
+    // ----- backtest -----
+    $('#backtest-form').addEventListener('submit', async (e) => {
+      e.preventDefault();
+      const f = e.target.elements;
+      const payload = {
+        symbol: f.symbol.value.trim().toUpperCase(),
+        starting_cash: parseFloat(f.starting_cash.value),
+        years: parseFloat(f.years.value),
+      };
+      const err = $('#backtest-error');
+      err.textContent = '';
+      try {
+        const r = await api('/api/backtest', { method: 'POST', body: JSON.stringify(payload) });
+        renderBacktest(r);
+        Sound.ding();
+      } catch (ex) {
+        err.textContent = ex.message;
+        Sound.alert();
+        $('#backtest-summary').hidden = true;
+        $('#backtest-chart-card').hidden = true;
+        $('#backtest-trades-card').hidden = true;
+      }
+    });
+  }
+
+  // ---------- backtest rendering --------------------------------------------
+  let backtestChart = null;
+  function renderBacktest(r) {
+    $('#backtest-summary').hidden = false;
+    $('#backtest-chart-card').hidden = false;
+    $('#backtest-trades-card').hidden = false;
+    $('#bt-symbol').textContent = r.symbol;
+    $('#bt-window').textContent = `${r.from} → ${r.to} · ${r.bars} bars`;
+    const up = r.strategy_return_pct >= 0;
+    const diffUp = r.outperformance_pct >= 0;
+    const stratEl = $('#bt-strat'); stratEl.textContent = fmtPct(r.strategy_return_pct); stratEl.className = 'n-val ' + (up?'up':'down');
+    $('#bt-bh').textContent = fmtPct(r.buy_hold_return_pct);
+    const diffEl = $('#bt-diff'); diffEl.textContent = (diffUp?'+':'') + r.outperformance_pct.toFixed(2) + '%'; diffEl.className = 'n-val ' + (diffUp?'up':'down');
+    $('#bt-final').textContent = fmtMoney(r.final_equity);
+    $('#bt-trips').textContent = String(r.round_trips);
+    $('#bt-winrate').textContent = r.win_rate_pct.toFixed(1) + '%';
+
+    // equity curve
+    const ctx = $('#backtest-chart');
+    if (ctx && typeof Chart !== 'undefined') {
+      const labels = r.equity_curve.map(p => p.date);
+      const equity = r.equity_curve.map(p => p.equity);
+      const bhStart = r.equity_curve[0]?.price || 1;
+      const bhShares = r.starting_cash / bhStart;
+      const bh = r.equity_curve.map(p => p.price * bhShares);
+      const cfg = {
+        type: 'line',
+        data: {
+          labels,
+          datasets: [
+            { label: 'Strategy', data: equity, borderColor: '#00e5ff', backgroundColor: 'rgba(0,229,255,0.08)', borderWidth: 2, pointRadius: 0, fill: true, tension: 0.1 },
+            { label: 'Buy & Hold', data: bh, borderColor: '#b388ff', borderWidth: 1.5, pointRadius: 0, tension: 0.1, borderDash: [6,5] },
+          ]
+        },
+        options: {
+          responsive: true, maintainAspectRatio: false,
+          interaction: { mode: 'index', intersect: false },
+          plugins: { legend: { display: true, labels: { color: '#9aa3b2' } } },
+          scales: {
+            x: { ticks: { color: '#5a6378', maxTicksLimit: 8 }, grid: { color: 'rgba(255,255,255,0.04)' } },
+            y: { ticks: { color: '#5a6378' }, grid: { color: 'rgba(255,255,255,0.04)' } },
+          }
+        }
+      };
+      if (!backtestChart) backtestChart = new Chart(ctx, cfg);
+      else { backtestChart.data = cfg.data; backtestChart.options = cfg.options; backtestChart.update('none'); }
+    }
+
+    const body = $('#backtest-trades-body');
+    $('#bt-trades-count').textContent = `${r.trades.length} execution${r.trades.length===1?'':'s'}`;
+    if (!r.trades.length) {
+      body.innerHTML = '<tr class="empty-row"><td colspan="5">No signals triggered in the selected window.</td></tr>';
+    } else {
+      body.innerHTML = r.trades.map(t => `
+        <tr>
+          <td>${t.date}</td>
+          <td><span class="sig-chip ${t.action === 'BUY' ? 'buy' : 'sell'}">${t.action}</span></td>
+          <td class="num">${fmtMoneySm(t.price)}</td>
+          <td class="num">${fmtNum(t.shares)}</td>
+          <td class="num">${fmtMoney(t.cost || t.proceeds || 0)}</td>
+        </tr>`).join('');
+    }
   }
 
   function toggleSound() {
@@ -1102,7 +1476,9 @@
       await refreshOnce();
       openStream();
       refreshWatchlist();
+      refreshTransactions();
       setInterval(refreshWatchlist, 30000);   // watchlist refreshes every 30s
+      setInterval(refreshTransactions, 60000); // transactions every minute
       setTimeout(moveTabUnderline, 50);
     } catch (err) {
       toast(`Boot failed: ${err.message}`, 'error');

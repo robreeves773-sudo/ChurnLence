@@ -1,0 +1,48 @@
+app = "churnlence"
+primary_region = "iad"
+
+[build]
+  dockerfile = "Dockerfile"
+
+[env]
+  PORT = "5000"
+
+[[services]]
+  protocol = "tcp"
+  internal_port = 5000
+  auto_stop_machines = true
+  auto_start_machines = true
+  min_machines_running = 0
+
+  [[services.ports]]
+    port = 80
+    handlers = ["http"]
+    force_https = true
+
+  [[services.ports]]
+    port = 443
+    handlers = ["tls", "http"]
+
+  [services.concurrency]
+    type = "connections"
+    hard_limit = 50
+    soft_limit = 25
+
+  [[services.tcp_checks]]
+    interval = "30s"
+    timeout = "5s"
+    grace_period = "10s"
+
+  [[services.http_checks]]
+    interval = "30s"
+    timeout = "5s"
+    grace_period = "10s"
+    method = "get"
+    path = "/api/portfolios"
+
+[[mounts]]
+  source = "churnlence_data"
+  destination = "/data"
+
+# SQLite lives in the volume so data persists across deploys.
+# Set CHURNLENCE_DB=/data/portfolio.db via `fly secrets set`.

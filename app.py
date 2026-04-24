@@ -1,17 +1,21 @@
 """ChurnLence portfolio tracker with live market data and Overkill-style indicators."""
 from __future__ import annotations
 
+import csv
 import hashlib
+import io
 import json
 import math
 import os
 import random
+import smtplib
 import sqlite3
 import threading
 import time
 from contextlib import contextmanager
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
+from email.message import EmailMessage
 from typing import Iterable
 
 import yfinance as yf
@@ -19,10 +23,19 @@ from flask import Flask, Response, g, jsonify, render_template, request
 
 app = Flask(__name__)
 
-DB_PATH = os.environ.get("CHURNLENCE_DB", os.path.join(os.path.dirname(__file__), "portfolio.db"))
+HERE = os.path.dirname(os.path.abspath(__file__))
+DB_PATH = os.environ.get("CHURNLENCE_DB", os.path.join(HERE, "portfolio.db"))
 DEMO_MODE = os.environ.get("CHURNLENCE_DEMO", "").lower() in ("1", "true", "yes")
 QUOTE_TTL = 2 if DEMO_MODE else 15  # seconds — shorter in demo so prices tick visibly
 STREAM_INTERVAL = 5  # seconds between SSE pushes
+ALERT_INTERVAL = 300  # seconds between signal-transition checks for email alerts
+
+# SMTP config for signal-transition email alerts. All must be set to enable emails.
+SMTP_HOST = os.environ.get("SMTP_HOST", "")
+SMTP_PORT = int(os.environ.get("SMTP_PORT", "587"))
+SMTP_USER = os.environ.get("SMTP_USER", "")
+SMTP_PASS = os.environ.get("SMTP_PASS", "")
+SMTP_FROM = os.environ.get("SMTP_FROM", SMTP_USER)
 
 # Curated symbol universe for autocomplete. Covers the usual asks from an
 # individual retail tracker: mega-caps, popular ETFs, and top crypto.
@@ -106,6 +119,31 @@ _quote_cache: dict[str, tuple[float, dict]] = {}
 _quote_lock = threading.Lock()
 
 
+# Load the big ticker universe once at import. ~6000 US equities/ETFs.
+# Each entry looks like {"symbol": "NVDA", "name": "NVDA", "kind": "stock"} —
+# the curated SYMBOL_UNIVERSE above takes priority (nicer names, preset chips).
+def _load_ticker_universe() -> list[dict]:
+    path = os.path.join(HERE, "tickers.txt")
+    if not os.path.exists(path):
+        return []
+    known = {item["symbol"] for item in SYMBOL_UNIVERSE}
+    out: list[dict] = []
+    with open(path, "r", encoding="utf-8") as f:
+        for line in f:
+            sym = line.strip().upper()
+            if not sym or sym in known:
+                continue
+            # Skip noisy warrant/rights/units — tickers that are 5+ chars ending in W/R/U/Z.
+            if len(sym) >= 5 and sym[-1] in ("W", "R", "U", "Z"):
+                continue
+            out.append({"symbol": sym, "name": sym, "kind": "stock"})
+    return out
+
+
+TICKER_UNIVERSE: list[dict] = _load_ticker_universe()
+TICKER_INDEX: dict[str, dict] = {t["symbol"]: t for t in SYMBOL_UNIVERSE + TICKER_UNIVERSE}
+
+
 # ---------------------------------------------------------------------------
 # Database
 # ---------------------------------------------------------------------------
@@ -124,11 +162,58 @@ CREATE TABLE IF NOT EXISTS holdings (
     shares REAL NOT NULL,
     cost_basis REAL NOT NULL,
     note TEXT,
+    acquired_at TEXT,
     created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
 );
 
 CREATE INDEX IF NOT EXISTS idx_holdings_portfolio ON holdings(portfolio_id);
+
+-- Realized sell transactions for tax-lot tracking.
+CREATE TABLE IF NOT EXISTS transactions (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    portfolio_id INTEGER NOT NULL REFERENCES portfolios(id) ON DELETE CASCADE,
+    symbol TEXT NOT NULL,
+    shares REAL NOT NULL,                -- shares sold (positive)
+    sell_price REAL NOT NULL,            -- price per share on sale
+    cost_basis REAL NOT NULL,            -- cost per share of the lot(s) sold (weighted)
+    proceeds REAL NOT NULL,              -- shares * sell_price
+    realized_pl REAL NOT NULL,           -- proceeds - shares * cost_basis
+    method TEXT NOT NULL DEFAULT 'FIFO', -- FIFO | LIFO
+    lot_ids TEXT,                        -- JSON array of lot IDs drawn down
+    sold_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+);
+
+CREATE INDEX IF NOT EXISTS idx_transactions_portfolio ON transactions(portfolio_id);
+
+-- Signal-transition history (for email alerts + signal feed).
+CREATE TABLE IF NOT EXISTS signal_events (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    portfolio_id INTEGER NOT NULL REFERENCES portfolios(id) ON DELETE CASCADE,
+    symbol TEXT NOT NULL,
+    from_signal TEXT,
+    to_signal TEXT NOT NULL,
+    price REAL NOT NULL,
+    reason TEXT,
+    created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+);
+
+CREATE INDEX IF NOT EXISTS idx_signal_events_portfolio ON signal_events(portfolio_id, created_at);
+
+-- Per-portfolio alert preferences (email address + opt-in flag).
+CREATE TABLE IF NOT EXISTS alert_prefs (
+    portfolio_id INTEGER PRIMARY KEY REFERENCES portfolios(id) ON DELETE CASCADE,
+    email TEXT,
+    enabled INTEGER NOT NULL DEFAULT 0,
+    updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+);
 """
+
+
+def _migrate(conn: sqlite3.Connection) -> None:
+    """Additive migrations for DBs created by older versions."""
+    cols = {row[1] for row in conn.execute("PRAGMA table_info(holdings)").fetchall()}
+    if "acquired_at" not in cols:
+        conn.execute("ALTER TABLE holdings ADD COLUMN acquired_at TEXT")
 
 
 def get_db() -> sqlite3.Connection:
@@ -151,6 +236,7 @@ def init_db() -> None:
     conn = sqlite3.connect(DB_PATH)
     try:
         conn.executescript(SCHEMA)
+        _migrate(conn)
         row = conn.execute("SELECT COUNT(*) FROM portfolios").fetchone()
         if row[0] == 0:
             conn.execute("INSERT INTO portfolios(name) VALUES (?)", ("Main",))
@@ -607,12 +693,27 @@ def portfolios():
     return jsonify([dict(r) for r in rows])
 
 
-@app.route("/api/portfolios/<int:pid>", methods=["DELETE"])
-def delete_portfolio(pid: int):
+@app.route("/api/portfolios/<int:pid>", methods=["DELETE", "PATCH"])
+def portfolio_detail(pid: int):
     db = get_db()
-    db.execute("DELETE FROM portfolios WHERE id = ?", (pid,))
-    db.commit()
-    return jsonify({"ok": True})
+    if request.method == "DELETE":
+        # Refuse to delete the last portfolio — always keep at least one.
+        remaining = db.execute("SELECT COUNT(*) FROM portfolios").fetchone()[0]
+        if remaining <= 1:
+            return jsonify({"error": "cannot delete the last portfolio"}), 400
+        db.execute("DELETE FROM portfolios WHERE id = ?", (pid,))
+        db.commit()
+        return jsonify({"ok": True})
+    data = request.get_json(force=True, silent=True) or {}
+    name = (data.get("name") or "").strip()
+    if not name:
+        return jsonify({"error": "name required"}), 400
+    try:
+        db.execute("UPDATE portfolios SET name = ? WHERE id = ?", (name, pid))
+        db.commit()
+    except sqlite3.IntegrityError:
+        return jsonify({"error": "name already in use"}), 409
+    return jsonify({"id": pid, "name": name})
 
 
 @app.route("/api/portfolios/<int:pid>/holdings", methods=["GET", "POST"])
@@ -672,20 +773,32 @@ def quote(symbol: str):
 
 @app.route("/api/search")
 def search():
-    """Autocomplete. Matches prefix first, then substring, capped at 10 results."""
+    """Autocomplete. Curated universe first (with nice names + kind),
+    then the wider ~6000-ticker fallback, then yfinance live lookup."""
     q = (request.args.get("q") or "").upper().strip()
     if not q:
         return jsonify([])
-    prefix, substring = [], []
+    prefix_curated, substring_curated = [], []
     for item in SYMBOL_UNIVERSE:
         sym = item["symbol"]
         name = item["name"].upper()
         if sym.startswith(q) or name.startswith(q):
-            prefix.append(item)
+            prefix_curated.append(item)
         elif q in sym or q in name:
-            substring.append(item)
-    out = (prefix + substring)[:10]
-    # If nothing matches the universe, let yfinance try (unless in demo).
+            substring_curated.append(item)
+    out = prefix_curated + substring_curated
+    # Pad with the wider fallback universe — prefix match only to stay fast.
+    if len(out) < 10:
+        seen = {i["symbol"] for i in out}
+        for item in TICKER_UNIVERSE:
+            sym = item["symbol"]
+            if sym in seen:
+                continue
+            if sym.startswith(q):
+                out.append(item)
+                if len(out) >= 10:
+                    break
+    out = out[:10]
     if not out and not DEMO_MODE and len(q) <= 8:
         try:
             info = yf.Ticker(q).info
@@ -760,6 +873,387 @@ def position_size_route():
     return jsonify(result)
 
 
+@app.route("/api/portfolios/<int:pid>/sell", methods=["POST"])
+def sell_shares(pid: int):
+    """Realize a sell against existing lots using FIFO or LIFO accounting.
+
+    Body: {symbol, shares, sell_price, method: "FIFO"|"LIFO"}
+    Records a transactions row and decrements/deletes holdings lots.
+    """
+    data = request.get_json(force=True, silent=True) or {}
+    symbol = (data.get("symbol") or "").upper().strip()
+    try:
+        shares_to_sell = float(data.get("shares"))
+        sell_price = float(data.get("sell_price"))
+    except (TypeError, ValueError):
+        return jsonify({"error": "shares and sell_price must be numbers"}), 400
+    method = (data.get("method") or "FIFO").upper()
+    if method not in ("FIFO", "LIFO"):
+        return jsonify({"error": "method must be FIFO or LIFO"}), 400
+    if shares_to_sell <= 0 or sell_price < 0 or not symbol:
+        return jsonify({"error": "invalid input"}), 400
+
+    db = get_db()
+    order = "ASC" if method == "FIFO" else "DESC"
+    lots = db.execute(
+        f"SELECT id, shares, cost_basis, acquired_at, created_at "
+        f"FROM holdings WHERE portfolio_id = ? AND symbol = ? "
+        f"ORDER BY COALESCE(acquired_at, created_at) {order}",
+        (pid, symbol),
+    ).fetchall()
+    total_held = sum(float(r["shares"]) for r in lots)
+    if shares_to_sell - total_held > 1e-9:
+        return jsonify({"error": f"only {total_held} shares of {symbol} held"}), 400
+
+    remaining = shares_to_sell
+    cost_total = 0.0
+    lot_ids: list[int] = []
+    for lot in lots:
+        if remaining <= 1e-9:
+            break
+        lot_shares = float(lot["shares"])
+        cost = float(lot["cost_basis"])
+        take = min(lot_shares, remaining)
+        cost_total += take * cost
+        lot_ids.append(int(lot["id"]))
+        new_shares = lot_shares - take
+        if new_shares <= 1e-9:
+            db.execute("DELETE FROM holdings WHERE id = ?", (lot["id"],))
+        else:
+            db.execute("UPDATE holdings SET shares = ? WHERE id = ?", (new_shares, lot["id"]))
+        remaining -= take
+
+    proceeds = shares_to_sell * sell_price
+    realized = proceeds - cost_total
+    weighted_cost = cost_total / shares_to_sell if shares_to_sell else 0.0
+    cur = db.execute(
+        "INSERT INTO transactions(portfolio_id, symbol, shares, sell_price, cost_basis, "
+        "proceeds, realized_pl, method, lot_ids) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
+        (pid, symbol, shares_to_sell, sell_price, weighted_cost,
+         round(proceeds, 4), round(realized, 4), method, json.dumps(lot_ids)),
+    )
+    db.commit()
+    return jsonify({
+        "id": cur.lastrowid,
+        "symbol": symbol,
+        "shares": shares_to_sell,
+        "sell_price": sell_price,
+        "cost_basis": round(weighted_cost, 4),
+        "proceeds": round(proceeds, 2),
+        "realized_pl": round(realized, 2),
+        "method": method,
+        "lot_ids": lot_ids,
+    })
+
+
+@app.route("/api/portfolios/<int:pid>/transactions")
+def list_transactions(pid: int):
+    db = get_db()
+    rows = db.execute(
+        "SELECT id, symbol, shares, sell_price, cost_basis, proceeds, realized_pl, "
+        "method, lot_ids, sold_at FROM transactions WHERE portfolio_id = ? "
+        "ORDER BY sold_at DESC LIMIT 200",
+        (pid,),
+    ).fetchall()
+    out = []
+    total_realized = 0.0
+    for r in rows:
+        d = dict(r)
+        try:
+            d["lot_ids"] = json.loads(d["lot_ids"] or "[]")
+        except Exception:
+            d["lot_ids"] = []
+        total_realized += float(d["realized_pl"] or 0)
+        out.append(d)
+    return jsonify({"transactions": out, "total_realized": round(total_realized, 2)})
+
+
+@app.route("/api/portfolios/<int:pid>/import", methods=["POST"])
+def import_csv(pid: int):
+    """Import holdings from a CSV export (Fidelity/Schwab/Robinhood/Vanguard or generic).
+
+    Body: {csv: "<raw csv text>"} or multipart file upload under 'file'.
+    Columns are fuzzy-matched case-insensitive: symbol/ticker, shares/quantity/qty,
+    cost/cost basis/average cost/price paid.
+    """
+    raw = ""
+    if "file" in request.files:
+        raw = request.files["file"].read().decode("utf-8", errors="ignore")
+    else:
+        data = request.get_json(force=True, silent=True) or {}
+        raw = data.get("csv") or ""
+    if not raw.strip():
+        return jsonify({"error": "empty CSV"}), 400
+
+    symbol_keys = ("symbol", "ticker", "security")
+    share_keys = ("shares", "quantity", "qty", "amount")
+    cost_keys = ("avg cost", "average cost", "cost basis", "cost per share",
+                 "price paid", "avg price", "unit cost", "cost", "price")
+
+    def _pick(row: dict, keys: tuple[str, ...]) -> str | None:
+        lowered = {k.lower().strip(): v for k, v in row.items() if k}
+        for key in keys:
+            if key in lowered and str(lowered[key]).strip():
+                return str(lowered[key]).strip()
+        # fuzzy contains
+        for key in keys:
+            for k, v in lowered.items():
+                if key in k and str(v).strip():
+                    return str(v).strip()
+        return None
+
+    reader = csv.DictReader(io.StringIO(raw))
+    if not reader.fieldnames:
+        return jsonify({"error": "CSV has no header row"}), 400
+
+    db = get_db()
+    added, errors = [], []
+    for idx, row in enumerate(reader, start=2):
+        sym = (_pick(row, symbol_keys) or "").upper().strip()
+        sym = sym.split()[0] if sym else sym  # "AAPL - Apple Inc" -> "AAPL"
+        sym = sym.replace("$", "")
+        shares_raw = _pick(row, share_keys)
+        cost_raw = _pick(row, cost_keys)
+        if not sym or not shares_raw:
+            errors.append({"row": idx, "error": "missing symbol or shares"})
+            continue
+        try:
+            shares = float(str(shares_raw).replace(",", "").replace("$", ""))
+        except ValueError:
+            errors.append({"row": idx, "symbol": sym, "error": "bad shares value"})
+            continue
+        try:
+            cost = float(str(cost_raw).replace(",", "").replace("$", "")) if cost_raw else 0.0
+        except ValueError:
+            cost = 0.0
+        if shares <= 0:
+            errors.append({"row": idx, "symbol": sym, "error": "shares must be positive"})
+            continue
+        q = fetch_quote(sym)
+        if q is None:
+            errors.append({"row": idx, "symbol": sym, "error": "symbol not found"})
+            continue
+        if cost <= 0:
+            cost = q.price  # default to current price if no cost basis given
+        cur = db.execute(
+            "INSERT INTO holdings(portfolio_id, symbol, shares, cost_basis, note) "
+            "VALUES (?, ?, ?, ?, ?)",
+            (pid, sym, shares, cost, "imported"),
+        )
+        added.append({"id": cur.lastrowid, "symbol": sym, "shares": shares, "cost_basis": cost})
+    db.commit()
+    return jsonify({"added": added, "errors": errors})
+
+
+def _backtest_symbol(symbol: str, years: float, starting_cash: float) -> dict:
+    """Walk-forward EMA strategy: BUY full position near 21 EMA with bullish stack,
+    SELL when extended >8% above 21 EMA. Compare to buy-and-hold."""
+    q = fetch_quote(symbol, force=False)
+    if q is None or not q.history:
+        return {"error": f"{symbol} not found"}
+    hist = q.history
+    # Trim to requested window
+    max_bars = max(1, min(len(hist), int(years * 252)))
+    hist = hist[-max_bars:]
+
+    cash = starting_cash
+    shares = 0.0
+    prev_signal = None
+    trades: list[dict] = []
+    equity_curve: list[dict] = []
+
+    for i, bar in enumerate(hist):
+        close = bar.get("close") or 0
+        e9 = bar.get("ema9")
+        e21 = bar.get("ema21")
+        e50 = bar.get("ema50")
+        e200 = bar.get("ema200")
+        signal, _ = _overkill_signal(close, e9, e21, e50, e200)
+        # Act on the OPEN of the next bar (use this bar's close as execution proxy)
+        if signal == "BUY" and shares == 0 and cash > 0 and close > 0:
+            shares = cash / close
+            cost = cash
+            cash = 0.0
+            trades.append({"date": bar["date"], "action": "BUY",
+                           "price": round(close, 4), "shares": round(shares, 4),
+                           "cost": round(cost, 2)})
+        elif signal == "SELL" and shares > 0 and close > 0:
+            proceeds = shares * close
+            trades.append({"date": bar["date"], "action": "SELL",
+                           "price": round(close, 4), "shares": round(shares, 4),
+                           "proceeds": round(proceeds, 2)})
+            cash = proceeds
+            shares = 0.0
+        equity = cash + shares * (close or 0)
+        equity_curve.append({"date": bar["date"], "equity": round(equity, 2),
+                             "price": round(close, 4), "signal": signal})
+        prev_signal = signal
+
+    # Final mark-to-market
+    final_close = hist[-1]["close"] or 0
+    final_equity = cash + shares * final_close
+    bh_shares = starting_cash / (hist[0]["close"] or 1)
+    bh_equity = bh_shares * final_close
+    strategy_return = (final_equity / starting_cash - 1) * 100
+    bh_return = (bh_equity / starting_cash - 1) * 100
+
+    # Win rate: of completed round-trips
+    wins = losses = 0
+    for i in range(1, len(trades)):
+        if trades[i]["action"] == "SELL" and trades[i - 1]["action"] == "BUY":
+            if trades[i]["price"] > trades[i - 1]["price"]:
+                wins += 1
+            else:
+                losses += 1
+
+    return {
+        "symbol": symbol,
+        "bars": len(hist),
+        "from": hist[0]["date"],
+        "to": hist[-1]["date"],
+        "starting_cash": starting_cash,
+        "final_equity": round(final_equity, 2),
+        "buy_hold_equity": round(bh_equity, 2),
+        "strategy_return_pct": round(strategy_return, 2),
+        "buy_hold_return_pct": round(bh_return, 2),
+        "outperformance_pct": round(strategy_return - bh_return, 2),
+        "round_trips": wins + losses,
+        "wins": wins,
+        "losses": losses,
+        "win_rate_pct": round(wins / (wins + losses) * 100, 1) if (wins + losses) else 0,
+        "trades": trades,
+        "equity_curve": equity_curve,
+    }
+
+
+@app.route("/api/backtest", methods=["POST"])
+def backtest_route():
+    data = request.get_json(force=True, silent=True) or {}
+    symbol = (data.get("symbol") or "").upper().strip()
+    try:
+        years = float(data.get("years") or 1.0)
+        cash = float(data.get("starting_cash") or 10000)
+    except (TypeError, ValueError):
+        return jsonify({"error": "invalid numeric input"}), 400
+    if not symbol:
+        return jsonify({"error": "symbol required"}), 400
+    result = _backtest_symbol(symbol, years, cash)
+    status = 400 if "error" in result else 200
+    return jsonify(result), status
+
+
+@app.route("/api/portfolios/<int:pid>/alerts", methods=["GET", "POST"])
+def alert_prefs(pid: int):
+    db = get_db()
+    if request.method == "POST":
+        data = request.get_json(force=True, silent=True) or {}
+        email = (data.get("email") or "").strip() or None
+        enabled = 1 if data.get("enabled") else 0
+        db.execute(
+            "INSERT INTO alert_prefs(portfolio_id, email, enabled, updated_at) "
+            "VALUES (?, ?, ?, CURRENT_TIMESTAMP) "
+            "ON CONFLICT(portfolio_id) DO UPDATE SET email = excluded.email, "
+            "enabled = excluded.enabled, updated_at = CURRENT_TIMESTAMP",
+            (pid, email, enabled),
+        )
+        db.commit()
+    row = db.execute(
+        "SELECT email, enabled, updated_at FROM alert_prefs WHERE portfolio_id = ?",
+        (pid,),
+    ).fetchone()
+    return jsonify({
+        "email": row["email"] if row else None,
+        "enabled": bool(row["enabled"]) if row else False,
+        "updated_at": row["updated_at"] if row else None,
+        "smtp_configured": bool(SMTP_HOST and SMTP_USER and SMTP_PASS),
+    })
+
+
+@app.route("/api/portfolios/<int:pid>/signal-events")
+def list_signal_events(pid: int):
+    db = get_db()
+    rows = db.execute(
+        "SELECT symbol, from_signal, to_signal, price, reason, created_at "
+        "FROM signal_events WHERE portfolio_id = ? "
+        "ORDER BY created_at DESC LIMIT 50",
+        (pid,),
+    ).fetchall()
+    return jsonify([dict(r) for r in rows])
+
+
+# ---------------------------------------------------------------------------
+# Background signal-transition watcher → email alerts
+# ---------------------------------------------------------------------------
+
+_last_signals: dict[tuple[int, str], str] = {}
+
+
+def _send_alert_email(to: str, symbol: str, from_sig: str | None, to_sig: str,
+                      price: float, reason: str) -> None:
+    if not (SMTP_HOST and SMTP_USER and SMTP_PASS and to):
+        return
+    msg = EmailMessage()
+    msg["Subject"] = f"ChurnLence: {symbol} → {to_sig}"
+    msg["From"] = SMTP_FROM or SMTP_USER
+    msg["To"] = to
+    body = (
+        f"Signal transition detected:\n\n"
+        f"  {symbol}: {from_sig or '—'} → {to_sig}\n"
+        f"  Price: {price:.4f}\n"
+        f"  Reason: {reason}\n\n"
+        f"— ChurnLence\n"
+    )
+    msg.set_content(body)
+    try:
+        with smtplib.SMTP(SMTP_HOST, SMTP_PORT, timeout=10) as s:
+            s.starttls()
+            s.login(SMTP_USER, SMTP_PASS)
+            s.send_message(msg)
+    except Exception as exc:
+        app.logger.warning("email alert failed: %s", exc)
+
+
+def _signal_watcher_loop():
+    while True:
+        try:
+            with direct_db() as db:
+                portfolios = db.execute(
+                    "SELECT p.id, ap.email, ap.enabled FROM portfolios p "
+                    "LEFT JOIN alert_prefs ap ON ap.portfolio_id = p.id"
+                ).fetchall()
+                for p in portfolios:
+                    pid = p["id"]
+                    holds = db.execute(
+                        "SELECT DISTINCT symbol FROM holdings WHERE portfolio_id = ?",
+                        (pid,),
+                    ).fetchall()
+                    for h in holds:
+                        sym = h["symbol"]
+                        q = fetch_quote(sym)
+                        if q is None:
+                            continue
+                        key = (pid, sym)
+                        prev = _last_signals.get(key)
+                        if prev is None:
+                            _last_signals[key] = q.signal
+                            continue
+                        if prev == q.signal:
+                            continue
+                        db.execute(
+                            "INSERT INTO signal_events(portfolio_id, symbol, from_signal, "
+                            "to_signal, price, reason) VALUES (?, ?, ?, ?, ?, ?)",
+                            (pid, sym, prev, q.signal, q.price, q.signal_reason),
+                        )
+                        db.commit()
+                        if p["enabled"] and p["email"]:
+                            _send_alert_email(p["email"], sym, prev, q.signal,
+                                              q.price, q.signal_reason)
+                        _last_signals[key] = q.signal
+        except Exception as exc:
+            app.logger.warning("signal watcher loop error: %s", exc)
+        time.sleep(ALERT_INTERVAL)
+
+
 @app.route("/api/portfolios/<int:pid>/stream")
 def stream(pid: int):
     """Server-Sent Events — live portfolio snapshot every STREAM_INTERVAL seconds."""
@@ -776,4 +1270,6 @@ def stream(pid: int):
 
 if __name__ == "__main__":
     init_db()
+    t = threading.Thread(target=_signal_watcher_loop, daemon=True, name="signal-watcher")
+    t.start()
     app.run(host="0.0.0.0", port=int(os.environ.get("PORT", 5000)), debug=False, threaded=True)
