@@ -354,6 +354,7 @@ select:focus, input:focus {
   display: grid; place-items: center;
   animation: fadeIn .2s ease;
 }
+.modal-backdrop[hidden] { display: none; }
 .modal { max-width: 480px; width: 92%; padding: 24px; }
 .modal-head { display: flex; justify-content: space-between; align-items: center; margin-bottom: 18px; }
 .modal-head h3 { margin: 0; font-size: 17px; font-weight: 600; }

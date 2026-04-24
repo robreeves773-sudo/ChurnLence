@@ -27,6 +27,11 @@
   const $ = (sel, root = document) => root.querySelector(sel);
   const $$ = (sel, root = document) => Array.from(root.querySelectorAll(sel));
 
+  function safeCall(label, fn) {
+    try { fn(); }
+    catch (err) { console.error(`[${label}]`, err); }
+  }
+
   function loadJSON(key, fallback) {
     try { const v = localStorage.getItem(key); return v ? JSON.parse(v) : fallback; }
     catch { return fallback; }
@@ -225,13 +230,13 @@
     if (snap.error) { toast(snap.error, 'error'); return; }
     state.snapshot = snap;
     detectSignalTransitions(snap.rows || []);
-    renderOverview(snap);
-    renderHoldings(snap);
-    renderSignalBars(snap);
-    renderAllocation(snap);
-    renderConcentration(snap);
-    renderTickerTape(snap);
-    updateChartSymbolSelector(snap);
+    safeCall('overview', () => renderOverview(snap));
+    safeCall('holdings', () => renderHoldings(snap));
+    safeCall('signals', () => renderSignalBars(snap));
+    safeCall('allocation', () => renderAllocation(snap));
+    safeCall('concentration', () => renderConcentration(snap));
+    safeCall('ticker', () => renderTickerTape(snap));
+    safeCall('chart-selector', () => updateChartSymbolSelector(snap));
     if (state.chartSymbol && $('.panel.active')?.dataset.panel === 'charts') renderDetailChart();
   }
 
@@ -563,7 +568,7 @@
     const data = rows.map(r => r.value);
     const colors = rows.map((_, i) => PALETTE[i % PALETTE.length]);
     const ctx = $('#alloc-chart');
-    if (!ctx) return;
+    if (!ctx || typeof Chart === 'undefined') return;
     const cfg = {
       type: 'doughnut',
       data: { labels, datasets: [{ data, backgroundColor: colors, borderWidth: 0 }] },
@@ -641,6 +646,7 @@
   async function renderDetailChart() {
     if (!state.chartSymbol) return;
     const ctx = $('#detail-chart');
+    if (typeof Chart === 'undefined') { toast('Chart library failed to load', 'error'); return; }
     try {
       const q = await api(`/api/quote/${encodeURIComponent(state.chartSymbol)}`);
       $('#chart-symbol-label').textContent = q.symbol + (q.name ? ` · ${q.name}` : '');
