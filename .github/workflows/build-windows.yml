@@ -12,6 +12,11 @@ on:
     tags:
       - 'v*'
   workflow_dispatch:
+    inputs:
+      release_tag:
+        description: 'Optional release tag (e.g. v1.0.0). Leave blank to just build the artifact. Setting this creates a public GitHub Release with ChurnLence.exe attached.'
+        required: false
+        default: ''
 
 permissions:
   contents: write   # needed by softprops/action-gh-release on tag pushes
@@ -61,3 +66,15 @@ jobs:
         with:
           files: dist/ChurnLence.exe
           generate_release_notes: true
+
+      # When a user clicks "Run workflow" and fills in the release_tag input,
+      # we create the tag + release on the fly. No git CLI needed locally.
+      - name: Create tagged Release from manual dispatch
+        if: github.event_name == 'workflow_dispatch' && inputs.release_tag != ''
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ inputs.release_tag }}
+          name: ChurnLence ${{ inputs.release_tag }}
+          target_commitish: ${{ github.sha }}
+          generate_release_notes: true
+          files: dist/ChurnLence.exe
