@@ -10,10 +10,12 @@ import os
 import random
 import smtplib
 import sqlite3
+import sys
 import threading
 import time
 import urllib.error
 import urllib.request
+import webbrowser
 from contextlib import contextmanager
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
@@ -23,10 +25,49 @@ from typing import Iterable
 import yfinance as yf
 from flask import Flask, Response, g, jsonify, render_template, request
 
-app = Flask(__name__)
+# When packaged with PyInstaller, source files live in a temp extraction dir
+# pointed to by sys._MEIPASS; outside the bundle, use the script's folder.
+if getattr(sys, "frozen", False) and hasattr(sys, "_MEIPASS"):
+    HERE = sys._MEIPASS  # type: ignore[attr-defined]
+else:
+    HERE = os.path.dirname(os.path.abspath(__file__))
 
-HERE = os.path.dirname(os.path.abspath(__file__))
-DB_PATH = os.environ.get("CHURNLENCE_DB", os.path.join(HERE, "portfolio.db"))
+# Tell Flask explicitly where templates / static live so the packaged exe
+# resolves them inside _MEIPASS instead of the (read-only) install dir.
+app = Flask(
+    __name__,
+    template_folder=os.path.join(HERE, "templates"),
+    static_folder=os.path.join(HERE, "static"),
+)
+
+
+def _default_db_path() -> str:
+    """User-writable location for the SQLite DB.
+
+    - $CHURNLENCE_DB wins if set (used by the Docker images).
+    - Windows: %LOCALAPPDATA%\\ChurnLence\\portfolio.db so the packaged .exe
+      survives reinstalls and never tries to write inside Program Files.
+    - macOS / Linux: ~/.churnlence/portfolio.db.
+    - Falls back to alongside the script in dev.
+    """
+    env = os.environ.get("CHURNLENCE_DB")
+    if env:
+        return env
+    if os.name == "nt":
+        base = os.environ.get("LOCALAPPDATA") or os.path.expanduser("~")
+        target_dir = os.path.join(base, "ChurnLence")
+    elif sys.platform == "darwin" or sys.platform.startswith("linux"):
+        target_dir = os.path.join(os.path.expanduser("~"), ".churnlence")
+    else:
+        target_dir = HERE
+    try:
+        os.makedirs(target_dir, exist_ok=True)
+        return os.path.join(target_dir, "portfolio.db")
+    except OSError:
+        return os.path.join(HERE, "portfolio.db")
+
+
+DB_PATH = _default_db_path()
 DEMO_MODE = os.environ.get("CHURNLENCE_DEMO", "").lower() in ("1", "true", "yes")
 QUOTE_TTL = 2 if DEMO_MODE else 15  # seconds — shorter in demo so prices tick visibly
 STREAM_INTERVAL = 5  # seconds between SSE pushes
@@ -1554,8 +1595,43 @@ def stream(pid: int):
     })
 
 
+def _open_browser_when_ready(port: int) -> None:
+    """Background helper that polls the local port and opens the browser
+    once Flask is actually serving. Used by the packaged .exe so a user
+    double-click immediately lands on the app."""
+    import socket
+    deadline = time.time() + 30
+    while time.time() < deadline:
+        try:
+            with socket.create_connection(("127.0.0.1", port), timeout=0.5):
+                webbrowser.open(f"http://localhost:{port}/", new=2)
+                return
+        except OSError:
+            time.sleep(0.25)
+
+
+def _print_banner(port: int) -> None:
+    name = "ChurnLence"
+    bar  = "=" * 60
+    print(bar)
+    print(f"  {name} — open the app at: http://localhost:{port}")
+    if DEMO_MODE:
+        print("  Mode: DEMO (synthetic prices, no internet needed)")
+    print(f"  Database: {DB_PATH}")
+    print("  Close this window to stop the server.")
+    print(bar, flush=True)
+
+
 if __name__ == "__main__":
     init_db()
-    t = threading.Thread(target=_signal_watcher_loop, daemon=True, name="signal-watcher")
-    t.start()
-    app.run(host="0.0.0.0", port=int(os.environ.get("PORT", 5000)), debug=False, threaded=True)
+    port = int(os.environ.get("PORT", 5000))
+    threading.Thread(target=_signal_watcher_loop, daemon=True, name="signal-watcher").start()
+    # When running as the packaged exe (or when explicitly opted in) auto-open
+    # the user's default browser the moment the port starts listening.
+    if getattr(sys, "frozen", False) or os.environ.get("CHURNLENCE_OPEN_BROWSER") == "1":
+        threading.Thread(target=_open_browser_when_ready, args=(port,), daemon=True).start()
+    _print_banner(port)
+    # Threaded=True lets SSE streams + REST requests interleave on one process.
+    # use_reloader=False is required when frozen (PyInstaller) and is friendlier
+    # in production anyway.
+    app.run(host="0.0.0.0", port=port, debug=False, threaded=True, use_reloader=False)

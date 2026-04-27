@@ -4,24 +4,52 @@ Two devices, two install paths. Pick one.
 
 ---
 
-## 🖥  On your **Windows PC** (easiest)
+## 🖥  On your **Windows PC**
 
-1. **Download or clone this folder** to your PC — for example, unzip it to
-   `C:\Users\You\Desktop\ChurnLence\`.
-2. **Install Python once** (skip if you already have Python 3.9+):
-   - Go to https://www.python.org/downloads/windows/ and click
-     *Download Python 3.x*.
-   - Run the installer. **Tick the box "Add python.exe to PATH"** before
-     clicking Install.
-3. **Double-click `run-windows.bat`**.
-   - First run takes ~60 seconds to set up a local Python environment.
-   - After that it launches in ~2 seconds and opens the app automatically
-     at http://localhost:5000.
-   - Leave the black console window open while using the app. Close it to
-     stop the server.
-4. Want to try it **without internet / real market data**? Double-click
-   `run-windows-demo.bat` instead — the app runs with simulated prices so
-   you can click around.
+You have **three** install paths, pick whichever fits.
+
+### Option 1 — One-click `.exe` (no Python, no setup) ✨ recommended
+
+1. Open the **GitHub repository** in your browser.
+2. Click the **Actions** tab.
+3. Click the latest successful "Build Windows installer" workflow run.
+4. Scroll to the bottom and download the artifact named
+   **`ChurnLence-Windows`** — inside is a single `ChurnLence.exe`
+   (~60 MB, all dependencies bundled).
+5. Move `ChurnLence.exe` anywhere you like (Desktop, `C:\Tools\`, etc.).
+6. **Double-click it.** A console window appears, the server starts, and
+   your default browser opens to http://localhost:5000 automatically.
+7. Close the console window when you're done.
+
+> **Tip:** Pin `ChurnLence.exe` to your taskbar — one click to start.
+>
+> Your portfolio data is saved to `%LOCALAPPDATA%\ChurnLence\portfolio.db`
+> so it survives even if you move or replace the .exe.
+>
+> **Windows SmartScreen warning?** The exe isn't code-signed (signing
+> certificates cost ~$200/yr). Click *More info → Run anyway* the first
+> time — Windows remembers the choice.
+
+### Option 2 — Auto-install (`install-and-run.bat`)
+
+If you can't access GitHub Actions or want to run from source:
+
+1. Download or clone this folder.
+2. Double-click **`install-and-run.bat`**.
+3. If Python isn't installed, the script downloads the official Python
+   installer, runs it silently for your user only (no admin), and then
+   keeps going. Total: ~90 sec on first run.
+4. After that the app launches in ~2 sec and opens the browser.
+
+### Option 3 — Already have Python
+
+1. Double-click **`run-windows.bat`** — it just creates a venv, installs
+   deps, starts the app.
+
+---
+
+**Demo mode** (no internet / synthetic prices, just to click around):
+double-click **`run-windows-demo.bat`** instead of any of the above.
 
 **First time? Do this:**
    - On the Holdings tab, click *⤓ Import CSV* and paste or upload a CSV

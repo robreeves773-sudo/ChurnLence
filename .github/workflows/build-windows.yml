@@ -1,0 +1,63 @@
+name: Build Windows installer
+
+# Builds a single-file ChurnLence.exe on Windows so the user can download
+# one file and double-click. Triggered on every push to the working branch
+# and on tagged releases. Manual runs are also allowed via the Actions UI.
+
+on:
+  push:
+    branches:
+      - main
+      - 'claude/**'
+    tags:
+      - 'v*'
+  workflow_dispatch:
+
+permissions:
+  contents: write   # needed by softprops/action-gh-release on tag pushes
+
+jobs:
+  build:
+    runs-on: windows-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Python 3.12
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+          cache: pip
+
+      - name: Install dependencies + PyInstaller
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
+          pip install pyinstaller pillow
+
+      - name: Convert PNG icon to .ico
+        shell: pwsh
+        run: |
+          python -c "from PIL import Image; Image.open('static/icon-512.png').save('static/icon.ico', sizes=[(16,16),(32,32),(48,48),(64,64),(128,128),(256,256)])"
+
+      - name: Build with PyInstaller
+        run: pyinstaller churnlence.spec --noconfirm --clean
+
+      - name: Show build output
+        shell: pwsh
+        run: |
+          Get-ChildItem dist -Recurse | Format-Table Length, Name
+
+      - name: Upload .exe as workflow artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: ChurnLence-Windows
+          path: dist/ChurnLence.exe
+          retention-days: 30
+
+      - name: Attach .exe to GitHub Release (tag pushes only)
+        if: startsWith(github.ref, 'refs/tags/')
+        uses: softprops/action-gh-release@v2
+        with:
+          files: dist/ChurnLence.exe
+          generate_release_notes: true
