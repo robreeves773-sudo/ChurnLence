@@ -156,6 +156,16 @@
         </article>
       </div>
 
+      <article class="glass-card actions-card" id="actions-card" style="margin-top:18px;">
+        <header class="card-head">
+          <h2>Today's actions</h2>
+          <span class="card-sub">Live BUY / SELL signals across your holdings &amp; watchlist</span>
+        </header>
+        <div class="actions-wrap" id="actions-wrap">
+          <div class="empty-row" style="padding:18px 8px;">All clear — every position is on HOLD right now.</div>
+        </div>
+      </article>
+
       <article class="glass-card risk-card" id="risk-card" style="margin-top:18px;">
         <header class="card-head">
           <h2>Concentration risk</h2>
@@ -547,16 +557,34 @@ NVDA,15,120"></textarea>
       <header class="modal-head"><h3>Email alerts</h3><button class="icon-btn" data-close>✕</button></header>
       <form id="alerts-form" class="form-grid">
         <div class="full" style="color:var(--ink-mute); font-size:13px;">
-          We email you when a holding's signal flips BUY↔HOLD↔SELL. Checks run every 5 minutes
-          server-side, so this works even when your browser is closed.
+          Two ways to get notified — pick either or both. Checks run every
+          5 min server-side, so this works even when your browser is closed.
         </div>
         <label class="full">Email address
           <input name="email" type="email" required placeholder="you@example.com" />
         </label>
         <label class="full" style="display:flex; flex-direction:row; align-items:center; gap:10px;">
           <input name="enabled" type="checkbox" style="width:auto;" />
-          <span>Send me emails on signal transitions for this portfolio</span>
+          <span>Email me on every BUY / SELL signal transition</span>
         </label>
+        <label class="full" style="display:flex; flex-direction:row; align-items:center; gap:10px;">
+          <input name="daily_digest" type="checkbox" style="width:auto;" />
+          <span>Send me a daily summary email with all signals</span>
+        </label>
+        <label>Digest time (UTC hour)
+          <select name="digest_hour_utc">
+            <option value="11">11:00 UTC (~7am ET)</option>
+            <option value="13" selected>13:00 UTC (~9am ET)</option>
+            <option value="14">14:00 UTC (~10am ET)</option>
+            <option value="20">20:00 UTC (~4pm ET, post-close)</option>
+            <option value="22">22:00 UTC (~6pm ET)</option>
+          </select>
+        </label>
+        <div class="form-actions" style="grid-column: span 1; justify-content: flex-start;">
+          <button type="button" class="ghost-btn" id="digest-preview-btn" title="See what today's email would look like">Preview today's digest</button>
+          <button type="button" class="ghost-btn" id="digest-send-btn" title="Send the digest right now (requires SMTP)">Send now</button>
+        </div>
+        <div class="full" id="digest-preview-out" hidden style="background:rgba(0,0,0,0.25); padding:12px; border-radius:8px; max-height:240px; overflow:auto; font-family:'JetBrains Mono', monospace; font-size:12px; white-space:pre-wrap; color:var(--ink-dim);"></div>
         <div class="form-error" id="alerts-status"></div>
         <div class="form-actions">
           <button type="button" class="ghost-btn" data-close>Close</button>

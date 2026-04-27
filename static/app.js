@@ -231,6 +231,7 @@
     state.snapshot = snap;
     detectSignalTransitions(snap.rows || []);
     safeCall('overview', () => renderOverview(snap));
+    safeCall('actions', () => renderTodaysActions(snap));
     safeCall('holdings', () => renderHoldings(snap));
     safeCall('signals', () => renderSignalBars(snap));
     safeCall('allocation', () => renderAllocation(snap));
@@ -598,6 +599,56 @@
   }
 
   // ---------- concentration / HHI -------------------------------------------
+  // ---------- Today's actions card -----------------------------------------
+  function renderTodaysActions(snap) {
+    const wrap = $('#actions-wrap');
+    if (!wrap) return;
+    const rows = (snap.rows || []).filter(r => !r.error);
+    // Holdings + watchlist tickers in one feed, deduped, non-HOLD only
+    const all = [...rows];
+    for (const sym of state.watchlist) {
+      const w = state.watchData[sym];
+      if (w && !rows.some(r => r.symbol === sym)) {
+        all.push({
+          symbol: w.symbol, price: w.price, change_pct: w.change_pct,
+          signal: w.signal, signal_reason: w.signal_reason,
+          stop_atr: w.stop_atr, stop_loss: w.stop_loss, _watchlist: true,
+        });
+      }
+    }
+    const actionable = all.filter(r => r.signal && r.signal !== 'HOLD');
+    if (!actionable.length) {
+      wrap.innerHTML = '<div class="empty-row" style="padding:18px 8px;">All clear — every position is on HOLD right now.</div>';
+      return;
+    }
+    actionable.sort((a, b) => (a.signal === 'SELL' ? -1 : 1) - (b.signal === 'SELL' ? -1 : 1));
+    wrap.innerHTML = actionable.map(r => {
+      const up = (r.change_pct || 0) >= 0;
+      const stop = r.stop_atr ?? r.stop_loss;
+      const tag = r._watchlist ? '<span class="ac-tag">watchlist</span>' : '';
+      return `
+        <div class="action-row" data-sym="${r.symbol}">
+          <span class="sig-chip ${r.signal.toLowerCase()}">${r.signal}</span>
+          <div class="action-main">
+            <div class="action-sym">${r.symbol} ${tag}</div>
+            <div class="action-reason">${escapeHtml(r.signal_reason || '')}</div>
+          </div>
+          <div class="action-px">
+            <div class="${up ? 'up' : 'down'}">${fmtMoneySm(r.price)} · ${fmtPct(r.change_pct)}</div>
+            ${stop ? `<div class="action-stop">stop ${fmtMoneySm(stop)}</div>` : ''}
+          </div>
+        </div>`;
+    }).join('');
+    $$('.action-row[data-sym]', wrap).forEach(el => {
+      el.addEventListener('click', () => {
+        state.chartSymbol = el.dataset.sym;
+        const sel = $('#chart-symbol-select');
+        if (sel && [...sel.options].some(o => o.value === el.dataset.sym)) sel.value = el.dataset.sym;
+        setTab('charts');
+      });
+    });
+  }
+
   function renderConcentration(snap) {
     const c = snap.concentration || { hhi: 0, grade: '—', warnings: [], top_weight: 0 };
     const valEl = $('#hhi-value');
@@ -1309,27 +1360,71 @@
         const f = $('#alerts-form');
         f.elements.email.value = p.email || '';
         f.elements.enabled.checked = !!p.enabled;
+        f.elements.daily_digest.checked = !!p.daily_digest;
+        f.elements.digest_hour_utc.value = String(p.digest_hour_utc ?? 13);
         const status = $('#alerts-status');
         status.style.color = '';
-        status.textContent = p.smtp_configured
-          ? 'SMTP is configured on the server — alerts will send.'
-          : 'SMTP is NOT configured on the server. Set SMTP_HOST / SMTP_USER / SMTP_PASS env vars to enable sending. You can still save the preference.';
-        if (!p.smtp_configured) status.style.color = 'var(--warn, #ffb84d)';
+        const lines = [];
+        if (p.smtp_configured) {
+          lines.push('SMTP is configured — alerts will send.');
+          if (p.last_digest_date) lines.push(`Last digest sent: ${p.last_digest_date}.`);
+        } else {
+          lines.push('SMTP is NOT configured on the server. Set SMTP_HOST / SMTP_USER / SMTP_PASS env vars to enable sending — you can still save the preference.');
+          status.style.color = '#ffb84d';
+        }
+        status.textContent = lines.join(' ');
+        $('#digest-preview-out').hidden = true;
+        $('#digest-preview-out').textContent = '';
         openModal('alerts-modal');
       } catch (ex) { toast(ex.message, 'error'); }
     }
     $('#alerts-form').addEventListener('submit', async (e) => {
       e.preventDefault();
+      const f = e.target.elements;
       const payload = {
-        email: e.target.elements.email.value.trim(),
-        enabled: e.target.elements.enabled.checked,
+        email: f.email.value.trim(),
+        enabled: f.enabled.checked,
+        daily_digest: f.daily_digest.checked,
+        digest_hour_utc: parseInt(f.digest_hour_utc.value, 10),
       };
       try {
         await api(`/api/portfolios/${state.currentPortfolioId}/alerts`,
           { method: 'POST', body: JSON.stringify(payload) });
         closeModal('alerts-modal');
-        toast(payload.enabled ? 'Email alerts enabled' : 'Email alerts saved', 'success');
+        const bits = [];
+        if (payload.enabled) bits.push('per-signal');
+        if (payload.daily_digest) bits.push('daily digest');
+        toast(bits.length ? `Alerts saved (${bits.join(' + ')})` : 'Alerts disabled', 'success');
       } catch (ex) { toast(ex.message, 'error'); }
+    });
+
+    $('#digest-preview-btn')?.addEventListener('click', async () => {
+      const out = $('#digest-preview-out');
+      out.hidden = false;
+      out.textContent = 'Loading…';
+      try {
+        const r = await api(`/api/portfolios/${state.currentPortfolioId}/digest/preview`);
+        out.textContent = r.body || '(empty)';
+      } catch (ex) { out.textContent = `Error: ${ex.message}`; }
+    });
+
+    $('#digest-send-btn')?.addEventListener('click', async () => {
+      // Save current settings first so the email used is the one in the form.
+      const f = $('#alerts-form').elements;
+      try {
+        await api(`/api/portfolios/${state.currentPortfolioId}/alerts`, {
+          method: 'POST',
+          body: JSON.stringify({
+            email: f.email.value.trim(),
+            enabled: f.enabled.checked,
+            daily_digest: f.daily_digest.checked,
+            digest_hour_utc: parseInt(f.digest_hour_utc.value, 10),
+          }),
+        });
+        const r = await api(`/api/portfolios/${state.currentPortfolioId}/digest/send`,
+          { method: 'POST' });
+        toast(`Digest emailed to ${r.to}`, 'success', 5000);
+      } catch (ex) { toast(ex.message, 'error', 5000); }
     });
 
     // ----- backtest -----

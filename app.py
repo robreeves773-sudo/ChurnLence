@@ -12,6 +12,8 @@ import smtplib
 import sqlite3
 import threading
 import time
+import urllib.error
+import urllib.request
 from contextlib import contextmanager
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
@@ -89,7 +91,69 @@ SYMBOL_UNIVERSE: list[dict] = [
     {"symbol": "AVAX-USD","name": "Avalanche","kind": "crypto"},
     {"symbol": "MATIC-USD","name": "Polygon", "kind": "crypto"},
     {"symbol": "DOT-USD", "name": "Polkadot", "kind": "crypto"},
+    # Mid/small caps that often miss Yahoo coverage — served via CoinGecko fallback.
+    {"symbol": "ZBCN-USD","name": "Zebec Network", "kind": "crypto"},
+    {"symbol": "ZBC-USD", "name": "Zebec Protocol (legacy)", "kind": "crypto"},
+    {"symbol": "JUP-USD", "name": "Jupiter",   "kind": "crypto"},
+    {"symbol": "PYTH-USD","name": "Pyth Network","kind": "crypto"},
+    {"symbol": "JTO-USD", "name": "Jito",      "kind": "crypto"},
+    {"symbol": "WIF-USD", "name": "dogwifhat", "kind": "crypto"},
+    {"symbol": "BONK-USD","name": "Bonk",      "kind": "crypto"},
+    {"symbol": "PEPE-USD","name": "Pepe",      "kind": "crypto"},
+    {"symbol": "FLOKI-USD","name":"Floki",     "kind": "crypto"},
+    {"symbol": "RNDR-USD","name": "Render",    "kind": "crypto"},
+    {"symbol": "TIA-USD", "name": "Celestia",  "kind": "crypto"},
+    {"symbol": "SEI-USD", "name": "Sei",       "kind": "crypto"},
+    {"symbol": "SUI-USD", "name": "Sui",       "kind": "crypto"},
+    {"symbol": "INJ-USD", "name": "Injective", "kind": "crypto"},
+    {"symbol": "FET-USD", "name": "Fetch.ai",  "kind": "crypto"},
+    {"symbol": "TAO-USD", "name": "Bittensor", "kind": "crypto"},
+    {"symbol": "ARB-USD", "name": "Arbitrum",  "kind": "crypto"},
+    {"symbol": "OP-USD",  "name": "Optimism",  "kind": "crypto"},
+    {"symbol": "APT-USD", "name": "Aptos",     "kind": "crypto"},
+    {"symbol": "NEAR-USD","name": "NEAR Protocol","kind": "crypto"},
+    {"symbol": "LDO-USD", "name": "Lido DAO",  "kind": "crypto"},
+    {"symbol": "AAVE-USD","name": "Aave",      "kind": "crypto"},
 ]
+
+
+# Map ChurnLence symbols → CoinGecko coin IDs. Used as a fallback when
+# yfinance has no data (smaller alts, fresh listings, etc.).  yfinance is
+# always preferred when it works — better OHLC + same-currency.
+COINGECKO_MAP: dict[str, str] = {
+    "ZBCN-USD": "zebec-network",
+    "ZBC-USD":  "zebec-protocol",
+    "BTC-USD":  "bitcoin",
+    "ETH-USD":  "ethereum",
+    "SOL-USD":  "solana",
+    "XRP-USD":  "ripple",
+    "ADA-USD":  "cardano",
+    "DOGE-USD": "dogecoin",
+    "LINK-USD": "chainlink",
+    "AVAX-USD": "avalanche-2",
+    "MATIC-USD":"matic-network",
+    "DOT-USD":  "polkadot",
+    "JUP-USD":  "jupiter-exchange-solana",
+    "PYTH-USD": "pyth-network",
+    "JTO-USD":  "jito-governance-token",
+    "WIF-USD":  "dogwifcoin",
+    "BONK-USD": "bonk",
+    "PEPE-USD": "pepe",
+    "FLOKI-USD":"floki",
+    "RNDR-USD": "render-token",
+    "TIA-USD":  "celestia",
+    "SEI-USD":  "sei-network",
+    "SUI-USD":  "sui",
+    "INJ-USD":  "injective-protocol",
+    "FET-USD":  "fetch-ai",
+    "TAO-USD":  "bittensor",
+    "ARB-USD":  "arbitrum",
+    "OP-USD":   "optimism",
+    "APT-USD":  "aptos",
+    "NEAR-USD": "near",
+    "LDO-USD":  "lido-dao",
+    "AAVE-USD": "aave",
+}
 
 # Preset baskets — one-click add for the "I just want to get started" user.
 PRESET_BASKETS: dict[str, dict] = {
@@ -199,11 +263,14 @@ CREATE TABLE IF NOT EXISTS signal_events (
 
 CREATE INDEX IF NOT EXISTS idx_signal_events_portfolio ON signal_events(portfolio_id, created_at);
 
--- Per-portfolio alert preferences (email address + opt-in flag).
+-- Per-portfolio alert preferences (email + opt-in flags + daily digest).
 CREATE TABLE IF NOT EXISTS alert_prefs (
     portfolio_id INTEGER PRIMARY KEY REFERENCES portfolios(id) ON DELETE CASCADE,
     email TEXT,
-    enabled INTEGER NOT NULL DEFAULT 0,
+    enabled INTEGER NOT NULL DEFAULT 0,           -- per-transition emails
+    daily_digest INTEGER NOT NULL DEFAULT 0,      -- one summary per day
+    digest_hour_utc INTEGER NOT NULL DEFAULT 13,  -- 13:00 UTC = ~9am ET
+    last_digest_date TEXT,                        -- YYYY-MM-DD; throttle to once per day
     updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
 );
 """
@@ -214,6 +281,15 @@ def _migrate(conn: sqlite3.Connection) -> None:
     cols = {row[1] for row in conn.execute("PRAGMA table_info(holdings)").fetchall()}
     if "acquired_at" not in cols:
         conn.execute("ALTER TABLE holdings ADD COLUMN acquired_at TEXT")
+    ap_cols = {row[1] for row in conn.execute("PRAGMA table_info(alert_prefs)").fetchall()}
+    if ap_cols:  # table exists from prior version — add new columns
+        for col, ddl in [
+            ("daily_digest",     "INTEGER NOT NULL DEFAULT 0"),
+            ("digest_hour_utc",  "INTEGER NOT NULL DEFAULT 13"),
+            ("last_digest_date", "TEXT"),
+        ]:
+            if col not in ap_cols:
+                conn.execute(f"ALTER TABLE alert_prefs ADD COLUMN {col} {ddl}")
 
 
 def get_db() -> sqlite3.Connection:
@@ -374,6 +450,60 @@ def _demo_history(symbol: str) -> tuple[list[str], list[float], list[float], lis
     return dates, highs, lows, closes, currency, name
 
 
+def _coingecko_history(coin_id: str) -> tuple[list[str], list[float], list[float], list[float], str, str] | None:
+    """Pull ~1 year of daily candles from CoinGecko (free tier, no key).
+
+    /market_chart returns prices, market_caps, total_volumes — daily granularity
+    when ``days >= 90``. There's no high/low at this granularity on the free
+    plan, so we approximate the daily range with ±0.6% of close (similar to a
+    typical low-vol crypto bar). EMAs and signal logic are close-based, so the
+    only real impact is on ATR — which slightly understates volatility.
+    """
+    url = f"https://api.coingecko.com/api/v3/coins/{coin_id}/market_chart?vs_currency=usd&days=365&interval=daily"
+    try:
+        req = urllib.request.Request(url, headers={"User-Agent": "ChurnLence/1.0"})
+        with urllib.request.urlopen(req, timeout=12) as resp:
+            payload = json.loads(resp.read())
+    except (urllib.error.URLError, urllib.error.HTTPError, TimeoutError, json.JSONDecodeError) as exc:
+        app.logger.warning("CoinGecko fetch failed for %s: %s", coin_id, exc)
+        return None
+
+    prices = payload.get("prices") or []
+    if len(prices) < 30:  # need enough bars to compute meaningful EMAs
+        return None
+    dates: list[str] = []
+    closes: list[float] = []
+    seen_dates: set[str] = set()
+    for ts_ms, px in prices:
+        d = datetime.fromtimestamp(ts_ms / 1000, tz=timezone.utc).strftime("%Y-%m-%d")
+        if d in seen_dates:
+            # Replace previous so the most-recent point for that date wins.
+            i = dates.index(d)
+            closes[i] = float(px)
+            continue
+        seen_dates.add(d)
+        dates.append(d)
+        closes.append(float(px))
+    # Synthetic high/low band for ATR (kept tight so we don't fabricate volatility).
+    highs = [c * 1.006 for c in closes]
+    lows  = [c * 0.994 for c in closes]
+    name = coin_id.replace("-", " ").title()
+    # Best-effort proper name via /coins/{id} — non-fatal.
+    try:
+        meta_url = (
+            f"https://api.coingecko.com/api/v3/coins/{coin_id}"
+            "?localization=false&tickers=false&market_data=false"
+            "&community_data=false&developer_data=false&sparkline=false"
+        )
+        req2 = urllib.request.Request(meta_url, headers={"User-Agent": "ChurnLence/1.0"})
+        with urllib.request.urlopen(req2, timeout=8) as resp:
+            meta = json.loads(resp.read())
+        name = meta.get("name") or name
+    except Exception:
+        pass
+    return dates, highs, lows, closes, "USD", name
+
+
 def fetch_quote(symbol: str, force: bool = False) -> Quote | None:
     symbol = symbol.upper().strip()
     if not symbol:
@@ -404,6 +534,17 @@ def fetch_quote(symbol: str, force: bool = False) -> Quote | None:
         except Exception as exc:
             app.logger.warning("yfinance history failed for %s: %s", symbol, exc)
 
+    used_coingecko = False
+    if not closes and not DEMO_MODE:
+        # Yahoo lacks coverage for many small caps and fresh listings — fall
+        # back to CoinGecko for any symbol we have a mapping for.
+        cg_id = COINGECKO_MAP.get(symbol)
+        if cg_id:
+            cg = _coingecko_history(cg_id)
+            if cg:
+                dates, highs, lows, closes, currency, name = cg
+                used_coingecko = True
+
     if not closes:
         if DEMO_MODE:
             dates, highs, lows, closes, currency, name = _demo_history(symbol)
@@ -421,8 +562,8 @@ def fetch_quote(symbol: str, force: bool = False) -> Quote | None:
     change = price - prev_close
     change_pct = (change / prev_close * 100) if prev_close else 0.0
 
-    if not DEMO_MODE:
-        # Best-effort live price + metadata
+    if not DEMO_MODE and not used_coingecko:
+        # Best-effort live price + metadata (yfinance only)
         try:
             fast = ticker.fast_info
             live = float(getattr(fast, "last_price", None) or fast.get("lastPrice") or 0) or None
@@ -1149,24 +1290,140 @@ def alert_prefs(pid: int):
         data = request.get_json(force=True, silent=True) or {}
         email = (data.get("email") or "").strip() or None
         enabled = 1 if data.get("enabled") else 0
+        daily = 1 if data.get("daily_digest") else 0
+        try:
+            hour = int(data.get("digest_hour_utc") if data.get("digest_hour_utc") is not None else 13)
+        except (TypeError, ValueError):
+            hour = 13
+        hour = max(0, min(23, hour))
         db.execute(
-            "INSERT INTO alert_prefs(portfolio_id, email, enabled, updated_at) "
-            "VALUES (?, ?, ?, CURRENT_TIMESTAMP) "
+            "INSERT INTO alert_prefs(portfolio_id, email, enabled, daily_digest, digest_hour_utc, updated_at) "
+            "VALUES (?, ?, ?, ?, ?, CURRENT_TIMESTAMP) "
             "ON CONFLICT(portfolio_id) DO UPDATE SET email = excluded.email, "
-            "enabled = excluded.enabled, updated_at = CURRENT_TIMESTAMP",
-            (pid, email, enabled),
+            "enabled = excluded.enabled, daily_digest = excluded.daily_digest, "
+            "digest_hour_utc = excluded.digest_hour_utc, updated_at = CURRENT_TIMESTAMP",
+            (pid, email, enabled, daily, hour),
         )
         db.commit()
     row = db.execute(
-        "SELECT email, enabled, updated_at FROM alert_prefs WHERE portfolio_id = ?",
+        "SELECT email, enabled, daily_digest, digest_hour_utc, last_digest_date, updated_at "
+        "FROM alert_prefs WHERE portfolio_id = ?",
         (pid,),
     ).fetchone()
     return jsonify({
-        "email": row["email"] if row else None,
-        "enabled": bool(row["enabled"]) if row else False,
-        "updated_at": row["updated_at"] if row else None,
-        "smtp_configured": bool(SMTP_HOST and SMTP_USER and SMTP_PASS),
+        "email":            row["email"] if row else None,
+        "enabled":          bool(row["enabled"]) if row else False,
+        "daily_digest":     bool(row["daily_digest"]) if row else False,
+        "digest_hour_utc":  int(row["digest_hour_utc"]) if row else 13,
+        "last_digest_date": row["last_digest_date"] if row else None,
+        "updated_at":       row["updated_at"] if row else None,
+        "smtp_configured":  bool(SMTP_HOST and SMTP_USER and SMTP_PASS),
     })
+
+
+def _build_digest(pid: int) -> dict:
+    """Compose the data for a daily summary: BUY / SELL / HOLD by symbol."""
+    snap = _portfolio_snapshot(pid)
+    rows = snap.get("rows") or []
+    buys, sells, holds = [], [], []
+    for r in rows:
+        if r.get("error"):
+            continue
+        bucket = {
+            "symbol": r["symbol"], "price": r.get("price"),
+            "change_pct": r.get("change_pct"),
+            "signal": r.get("signal"), "reason": r.get("signal_reason"),
+            "stop_atr": r.get("stop_atr"), "stop_ma": r.get("stop_loss"),
+        }
+        if r.get("signal") == "BUY":   buys.append(bucket)
+        elif r.get("signal") == "SELL": sells.append(bucket)
+        else:                           holds.append(bucket)
+    return {
+        "portfolio": snap.get("portfolio"),
+        "totals":    snap.get("totals"),
+        "buys": buys, "sells": sells, "holds": holds,
+        "concentration": snap.get("concentration"),
+        "as_of":     snap.get("updated_at"),
+    }
+
+
+def _format_digest_text(pid: int, name: str, dig: dict) -> tuple[str, str]:
+    """Returns (subject, plain-text body) for the daily email."""
+    today = datetime.now(timezone.utc).strftime("%Y-%m-%d")
+    n_buy = len(dig["buys"]); n_sell = len(dig["sells"]); n_hold = len(dig["holds"])
+    subject = f"ChurnLence · {name} · {today} · {n_buy} BUY · {n_sell} SELL · {n_hold} HOLD"
+
+    def _line(b):
+        chg = (b.get("change_pct") or 0)
+        arrow = "▲" if chg >= 0 else "▼"
+        stop = b.get("stop_atr") or b.get("stop_ma")
+        stop_s = f"  stop {stop:.4f}" if stop else ""
+        return f"  {b['symbol']:<10} {b.get('price', 0):>10.4f}  {arrow} {chg:+.2f}%{stop_s}\n     ↳ {b.get('reason') or ''}"
+
+    lines = [f"Daily signals for portfolio: {name}", f"As of: {today} (UTC)", ""]
+    t = dig.get("totals") or {}
+    if t:
+        lines.append(f"Portfolio value: ${t.get('value', 0):,.2f}  "
+                     f"·  Day P/L ${t.get('day_pl', 0):,.2f}  "
+                     f"·  Total P/L ${t.get('pl', 0):,.2f} ({t.get('pl_pct', 0):.2f}%)")
+        lines.append("")
+    if dig["buys"]:
+        lines.append(f"== BUY ({n_buy}) — bullish stack near 21 EMA ==")
+        lines.extend(_line(b) for b in dig["buys"])
+        lines.append("")
+    if dig["sells"]:
+        lines.append(f"== SELL ({n_sell}) — extended above MA / bearish stack ==")
+        lines.extend(_line(b) for b in dig["sells"])
+        lines.append("")
+    if dig["holds"]:
+        lines.append(f"== HOLD ({n_hold}) ==")
+        lines.extend(f"  {b['symbol']:<10} {b.get('price', 0):>10.4f}  ({b.get('reason') or ''})"
+                     for b in dig["holds"])
+    lines.append("")
+    lines.append("Stop levels above are MA-3% or 2×ATR — the same numbers shown in the app.")
+    lines.append("This is arithmetic, not advice.")
+    return subject, "\n".join(lines)
+
+
+@app.route("/api/portfolios/<int:pid>/digest/preview")
+def digest_preview(pid: int):
+    """Returns the JSON used to build today's email + the formatted text body."""
+    dig = _build_digest(pid)
+    name = dig.get("portfolio", {}).get("name", "Portfolio")
+    subject, body = _format_digest_text(pid, name, dig)
+    return jsonify({**dig, "subject": subject, "body": body})
+
+
+@app.route("/api/portfolios/<int:pid>/digest/send", methods=["POST"])
+def digest_send_now(pid: int):
+    """Send today's digest immediately. Useful for testing SMTP."""
+    db = get_db()
+    row = db.execute(
+        "SELECT email FROM alert_prefs WHERE portfolio_id = ?", (pid,),
+    ).fetchone()
+    if not row or not row["email"]:
+        return jsonify({"error": "no email saved for this portfolio"}), 400
+    if not (SMTP_HOST and SMTP_USER and SMTP_PASS):
+        return jsonify({"error": "SMTP not configured on the server"}), 400
+    dig = _build_digest(pid)
+    name = dig.get("portfolio", {}).get("name", "Portfolio")
+    subject, body = _format_digest_text(pid, name, dig)
+    msg = EmailMessage()
+    msg["Subject"] = subject
+    msg["From"] = SMTP_FROM or SMTP_USER
+    msg["To"] = row["email"]
+    msg.set_content(body)
+    try:
+        with smtplib.SMTP(SMTP_HOST, SMTP_PORT, timeout=10) as s:
+            s.starttls()
+            s.login(SMTP_USER, SMTP_PASS)
+            s.send_message(msg)
+    except Exception as exc:
+        return jsonify({"error": f"SMTP send failed: {exc}"}), 500
+    db.execute("UPDATE alert_prefs SET last_digest_date = ? WHERE portfolio_id = ?",
+               (datetime.now(timezone.utc).strftime("%Y-%m-%d"), pid))
+    db.commit()
+    return jsonify({"ok": True, "to": row["email"], "subject": subject})
 
 
 @app.route("/api/portfolios/<int:pid>/signal-events")
@@ -1218,11 +1475,16 @@ def _signal_watcher_loop():
         try:
             with direct_db() as db:
                 portfolios = db.execute(
-                    "SELECT p.id, ap.email, ap.enabled FROM portfolios p "
+                    "SELECT p.id, p.name, ap.email, ap.enabled, ap.daily_digest, "
+                    "ap.digest_hour_utc, ap.last_digest_date "
+                    "FROM portfolios p "
                     "LEFT JOIN alert_prefs ap ON ap.portfolio_id = p.id"
                 ).fetchall()
+                now = datetime.now(timezone.utc)
+                today_str = now.strftime("%Y-%m-%d")
                 for p in portfolios:
                     pid = p["id"]
+                    # --- per-transition signal alerts ---
                     holds = db.execute(
                         "SELECT DISTINCT symbol FROM holdings WHERE portfolio_id = ?",
                         (pid,),
@@ -1249,6 +1511,30 @@ def _signal_watcher_loop():
                             _send_alert_email(p["email"], sym, prev, q.signal,
                                               q.price, q.signal_reason)
                         _last_signals[key] = q.signal
+
+                    # --- daily digest (fire once per UTC day at the chosen hour) ---
+                    if (p["daily_digest"] and p["email"] and SMTP_HOST and SMTP_USER and SMTP_PASS
+                            and now.hour >= (p["digest_hour_utc"] or 13)
+                            and (p["last_digest_date"] or "") != today_str):
+                        try:
+                            dig = _build_digest(pid)
+                            subject, body = _format_digest_text(pid, p["name"] or "Portfolio", dig)
+                            msg = EmailMessage()
+                            msg["Subject"] = subject
+                            msg["From"] = SMTP_FROM or SMTP_USER
+                            msg["To"] = p["email"]
+                            msg.set_content(body)
+                            with smtplib.SMTP(SMTP_HOST, SMTP_PORT, timeout=10) as s:
+                                s.starttls()
+                                s.login(SMTP_USER, SMTP_PASS)
+                                s.send_message(msg)
+                            db.execute(
+                                "UPDATE alert_prefs SET last_digest_date = ? WHERE portfolio_id = ?",
+                                (today_str, pid),
+                            )
+                            db.commit()
+                        except Exception as exc:
+                            app.logger.warning("daily digest send failed for pid=%s: %s", pid, exc)
         except Exception as exc:
             app.logger.warning("signal watcher loop error: %s", exc)
         time.sleep(ALERT_INTERVAL)

@@ -641,6 +641,31 @@ select:focus, input:focus {
 .hcard-grid .n-val { font-family: 'JetBrains Mono', monospace; font-weight: 600; font-size: 13px; display: block; }
 .hcard-actions { display: flex; gap: 8px; justify-content: flex-end; }
 
+/* Today's actions card */
+.actions-card .actions-wrap { display: flex; flex-direction: column; gap: 8px; }
+.action-row {
+  display: grid;
+  grid-template-columns: 60px 1fr auto;
+  gap: 14px;
+  align-items: center;
+  padding: 12px 14px;
+  border-radius: 10px;
+  background: rgba(255,255,255,0.025);
+  border: 1px solid rgba(255,255,255,0.05);
+  cursor: pointer;
+  transition: border-color 0.15s, background 0.15s;
+}
+.action-row:hover { background: rgba(0,229,255,0.05); border-color: rgba(0,229,255,0.25); }
+.action-sym { font-weight: 700; font-size: 14px; letter-spacing: 0.02em; }
+.ac-tag {
+  font-size: 9px; font-weight: 600; letter-spacing: 0.08em;
+  padding: 2px 6px; border-radius: 4px; margin-left: 6px;
+  background: rgba(179,136,255,0.15); color: var(--violet); text-transform: uppercase;
+}
+.action-reason { font-size: 12px; color: var(--ink-mute); margin-top: 2px; }
+.action-px { font-family: 'JetBrains Mono', monospace; text-align: right; font-size: 13px; }
+.action-stop { font-size: 11px; color: var(--ink-mute); margin-top: 2px; }
+
 /* responsive */
 @media (max-width: 1024px) {
   .hero-grid { grid-template-columns: repeat(2, 1fr); }
