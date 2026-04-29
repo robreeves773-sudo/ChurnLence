@@ -935,7 +935,9 @@
 
   // ---------- allocation doughnut -------------------------------------------
   let allocChart = null;
-  const PALETTE = ['#00e5ff', '#b388ff', '#ff3d7f', '#00ff9c', '#ffb84d', '#ff9e3d', '#4d7cff', '#ff5577'];
+  // Bleach palette: Ichigo orange + bankai cyan + Hollow red + Senbonzakura pink
+  // + kido green + amber + violet + softer crimson — works in any order on the doughnut
+  const PALETTE = ['#ff6a00', '#00d4ff', '#cc1f33', '#ff8aae', '#00ff9c', '#ffb84d', '#b388ff', '#ff7a99'];
   function renderAllocation(snap) {
     const rows = (snap.rows || []).filter(r => !r.error && (r.value || 0) > 0);
     const labels = rows.map(r => r.symbol);
@@ -1043,12 +1045,17 @@
           labels,
           datasets: [
             { label: 'Close', data: hist.map(h => h.close), borderColor: '#e7ecf5', backgroundColor: 'rgba(231,236,245,0.06)', borderWidth: 2, pointRadius: 0, fill: true, tension: 0.12 },
-            { label: 'EMA 9',   data: hist.map(h => h.ema9),   borderColor: '#ff9e3d', borderWidth: 1.3, pointRadius: 0, tension: 0.15 },
+            // EMA colors mapped to Bleach motifs:
+            // EMA 9  = Ichigo orange (fast spiritual energy)
+            // EMA 21 = white (Hollow / Tensa wrap)
+            // EMA 50 = bankai cyan
+            // EMA 200 = Senbonzakura pink (slow & elegant)
+            { label: 'EMA 9',   data: hist.map(h => h.ema9),   borderColor: '#ff6a00', borderWidth: 1.5, pointRadius: 0, tension: 0.15 },
             { label: 'EMA 21',  data: hist.map(h => h.ema21),  borderColor: '#ffffff', borderWidth: 1.3, pointRadius: 0, tension: 0.15 },
-            { label: 'EMA 50',  data: hist.map(h => h.ema50),  borderColor: '#00e5ff', borderWidth: 1.3, pointRadius: 0, tension: 0.15 },
-            { label: 'EMA 200', data: hist.map(h => h.ema200), borderColor: '#4d7cff', borderWidth: 1.3, pointRadius: 0, tension: 0.15 },
+            { label: 'EMA 50',  data: hist.map(h => h.ema50),  borderColor: '#00d4ff', borderWidth: 1.3, pointRadius: 0, tension: 0.15 },
+            { label: 'EMA 200', data: hist.map(h => h.ema200), borderColor: '#ff8aae', borderWidth: 1.3, pointRadius: 0, tension: 0.15 },
             { label: 'Stop',    data: hist.map(() => q.stop_loss),
-              borderColor: '#ff3d7f', borderWidth: 1, pointRadius: 0, borderDash: [6,5] },
+              borderColor: '#cc1f33', borderWidth: 1, pointRadius: 0, borderDash: [6,5] },
           ]
         },
         options: {

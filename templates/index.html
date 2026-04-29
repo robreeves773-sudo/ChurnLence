@@ -7,7 +7,7 @@
   <meta name="apple-mobile-web-app-capable" content="yes" />
   <meta name="apple-mobile-web-app-title" content="ChurnLence" />
   <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent" />
-  <meta name="theme-color" content="#0b0f18" />
+  <meta name="theme-color" content="#ff6a00" />
   <meta name="color-scheme" content="dark" />
   <link rel="manifest" href="/static/manifest.webmanifest" />
   <link rel="icon" type="image/png" sizes="64x64" href="/static/favicon.png" />
@@ -27,34 +27,57 @@
 </head>
 <body>
   <div class="bg-grid"></div>
+  <div class="bg-slash"></div>
   <div class="bg-glow bg-glow-cyan"></div>
   <div class="bg-glow bg-glow-magenta"></div>
 
   <header class="topbar">
     <div class="brand">
-      <div class="brand-mark">
-        <svg viewBox="0 0 40 40" width="28" height="28" aria-hidden="true">
+      <div class="brand-mark" title="斬月 · Zangetsu — Slaying Moon">
+        <!-- Tensa Zangetsu — vertical black blade, cyan reishi edge, orange handle wrap -->
+        <svg viewBox="0 0 40 40" width="30" height="30" aria-hidden="true">
           <defs>
-            <linearGradient id="g1" x1="0" x2="1" y1="0" y2="1">
-              <stop offset="0" stop-color="#00e5ff"/>
-              <stop offset="1" stop-color="#b388ff"/>
+            <linearGradient id="bladeGrad" x1="0" x2="1" y1="0" y2="0">
+              <stop offset="0" stop-color="#0a0a10"/>
+              <stop offset="0.85" stop-color="#1a1a22"/>
+              <stop offset="1" stop-color="#00d4ff"/>
             </linearGradient>
+            <linearGradient id="hiltGrad" x1="0" x2="0" y1="0" y2="1">
+              <stop offset="0" stop-color="#ff6a00"/>
+              <stop offset="1" stop-color="#cc1f33"/>
+            </linearGradient>
+            <filter id="bladeGlow"><feGaussianBlur stdDeviation="0.6"/></filter>
           </defs>
-          <path fill="url(#g1)" d="M4 28 L12 20 L18 24 L26 12 L36 20 L36 36 L4 36 Z"/>
-          <path stroke="#fff" stroke-width="1.5" fill="none" stroke-linecap="round"
-                d="M4 22 L12 14 L18 18 L26 6 L36 14"/>
+          <!-- Cyan energy aura -->
+          <path d="M19 4 L21 4 L21.5 26 L18.5 26 Z" fill="#00d4ff" opacity="0.5" filter="url(#bladeGlow)"/>
+          <!-- Black blade -->
+          <path d="M19 4 L21 4 L21 26 L19 26 Z" fill="url(#bladeGrad)"/>
+          <!-- Cross-guard / tsuba -->
+          <rect x="14" y="25" width="12" height="2" fill="#1a1a22" stroke="#ff6a00" stroke-width="0.4"/>
+          <!-- Wrapped hilt (orange) -->
+          <rect x="18.5" y="27" width="3" height="9" fill="url(#hiltGrad)"/>
+          <!-- Hilt wrap lines -->
+          <line x1="18.5" y1="29" x2="21.5" y2="29" stroke="#0a0a10" stroke-width="0.4"/>
+          <line x1="18.5" y1="31" x2="21.5" y2="31" stroke="#0a0a10" stroke-width="0.4"/>
+          <line x1="18.5" y1="33" x2="21.5" y2="33" stroke="#0a0a10" stroke-width="0.4"/>
+          <!-- Pommel -->
+          <circle cx="20" cy="36.5" r="1.2" fill="#ff6a00"/>
         </svg>
       </div>
       <div class="brand-text">
-        <h1>ChurnLence</h1>
-        <span class="brand-sub">Overkill-style portfolio · live</span>
+        <h1>ChurnLence <span class="brand-kanji">卍解</span></h1>
+        <span class="brand-sub">Bankai · cut through the market</span>
       </div>
     </div>
 
     <div class="mode-toggle" role="radiogroup" aria-label="Trading mode" id="mode-toggle"
-         title="SWING = daily candles + 9/21/50/200 EMAs. DAY = 15-min candles + tighter stops.">
-      <button type="button" data-mode="swing" class="active" role="radio" aria-checked="true">SWING</button>
-      <button type="button" data-mode="day"   role="radio" aria-checked="false">DAY</button>
+         title="SHIKAI 始解 = swing trading (daily candles, 9/21/50/200 EMAs).&#10;BANKAI 卍解 = day trading (15-min candles, tighter stops, faster signals).">
+      <button type="button" data-mode="swing" class="active" role="radio" aria-checked="true">
+        SHIKAI<span class="kanji">始解</span>
+      </button>
+      <button type="button" data-mode="day"   role="radio" aria-checked="false">
+        BANKAI<span class="kanji">卍解</span>
+      </button>
     </div>
 
     <nav class="tabs" role="tablist" aria-label="Sections">
@@ -285,11 +308,11 @@
         </div>
         <canvas id="detail-chart" height="380"></canvas>
         <div class="chart-legend">
-          <span><i class="dot" style="background:#ff9e3d"></i>EMA 9</span>
+          <span><i class="dot" style="background:#ff6a00"></i>EMA 9</span>
           <span><i class="dot" style="background:#ffffff"></i>EMA 21</span>
-          <span><i class="dot" style="background:#00e5ff"></i>EMA 50</span>
-          <span><i class="dot" style="background:#4d7cff"></i>EMA 200</span>
-          <span><i class="dot dashed" style="background:#ff3d7f"></i>Stop-loss</span>
+          <span><i class="dot" style="background:#00d4ff"></i>EMA 50</span>
+          <span><i class="dot" style="background:#ff8aae"></i>EMA 200</span>
+          <span><i class="dot dashed" style="background:#cc1f33"></i>Stop-loss</span>
         </div>
       </div>
       <article class="glass-card news-card" id="news-card" style="margin-top:14px;" hidden>
