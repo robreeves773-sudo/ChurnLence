@@ -15,6 +15,7 @@
     soundOn: loadJSON('churnlence.sound', true),
     notifyOn: loadJSON('churnlence.notify', false),
     plannerDefaults: loadJSON('churnlence.planner', { account: 10000, risk_pct: 1, stop_method: 'atr', atr_multiplier: 2 }),
+    mode: loadJSON('churnlence.mode', 'swing'),  // 'swing' | 'day' — flips signal logic + chart timeframe
     sortKey: 'value',
     sortDir: -1,
     evtSource: null,
@@ -175,6 +176,12 @@
     return r.json();
   }
 
+  // Append ?mode=swing|day to a path, preserving any existing query string.
+  function withMode(path) {
+    const sep = path.includes('?') ? '&' : '?';
+    return `${path}${sep}mode=${encodeURIComponent(state.mode || 'swing')}`;
+  }
+
   // ---------- portfolio picker ----------------------------------------------
   async function loadPortfolios() {
     state.portfolios = await api('/api/portfolios');
@@ -196,7 +203,7 @@
   function openStream() {
     if (state.evtSource) state.evtSource.close();
     if (!state.currentPortfolioId) return;
-    const src = new EventSource(`/api/portfolios/${state.currentPortfolioId}/stream`);
+    const src = new EventSource(withMode(`/api/portfolios/${state.currentPortfolioId}/stream`));
     state.evtSource = src;
 
     src.addEventListener('open', () => {
@@ -676,7 +683,7 @@
     const costInput = $('#cost-basis-input');
     const preview = $('#symbol-preview');
     try {
-      const q = await api(`/api/quote/${encodeURIComponent(symbol)}`);
+      const q = await api(withMode(`/api/quote/${encodeURIComponent(symbol)}`));
       preview.textContent = `${fmtMoneySm(q.price)}`;
       if (!costInput.value || parseFloat(costInput.value) === 0) {
         costInput.value = q.price;
@@ -848,7 +855,7 @@
     const ctx = $('#detail-chart');
     if (typeof Chart === 'undefined') { toast('Chart library failed to load', 'error'); return; }
     try {
-      const q = await api(`/api/quote/${encodeURIComponent(state.chartSymbol)}`);
+      const q = await api(withMode(`/api/quote/${encodeURIComponent(state.chartSymbol)}`));
       $('#chart-symbol-label').textContent = q.symbol + (q.name ? ` · ${q.name}` : '');
       $('#chart-price').textContent = fmtMoneySm(q.price);
       const chg = q.change_pct ?? 0;
@@ -931,7 +938,7 @@
       return;
     }
     const results = await Promise.allSettled(
-      state.watchlist.map(s => api(`/api/quote/${encodeURIComponent(s)}`))
+      state.watchlist.map(s => api(withMode(`/api/quote/${encodeURIComponent(s)}`)))
     );
     grid.innerHTML = '';
     results.forEach((res, i) => {
@@ -982,7 +989,7 @@
   // ---------- actions --------------------------------------------------------
   async function refreshOnce() {
     if (!state.currentPortfolioId) return;
-    const snap = await api(`/api/portfolios/${state.currentPortfolioId}/holdings`);
+    const snap = await api(withMode(`/api/portfolios/${state.currentPortfolioId}/holdings`));
     applySnapshot(snap);
   }
 
@@ -1060,7 +1067,40 @@
   }
 
   // ---------- event wiring ---------------------------------------------------
+  function applyMode() {
+    const tg = $('#mode-toggle');
+    if (!tg) return;
+    $$('button', tg).forEach(b => {
+      const on = b.dataset.mode === state.mode;
+      b.classList.toggle('active', on);
+      b.setAttribute('aria-checked', on ? 'true' : 'false');
+    });
+    document.body.classList.toggle('mode-day', state.mode === 'day');
+    document.body.classList.toggle('mode-swing', state.mode === 'swing');
+  }
+  function setMode(next) {
+    if (next !== 'day' && next !== 'swing') return;
+    if (state.mode === next) return;
+    state.mode = next;
+    saveJSON('churnlence.mode', next);
+    applyMode();
+    // Reset render hashes so the snapshot UI redraws with new signal text/colors
+    Object.keys(renderHashes || {}).forEach(k => delete renderHashes[k]);
+    toast(`Switched to ${next === 'day' ? 'Day-trade' : 'Swing'} mode`, 'info');
+    Sound.click();
+    openStream();   // re-open SSE with new mode
+    refreshOnce();
+    refreshWatchlist();
+    if (state.chartSymbol) renderDetailChart();
+  }
+
   function bind() {
+    // mode toggle
+    const tg = $('#mode-toggle');
+    if (tg) {
+      $$('button', tg).forEach(b => b.addEventListener('click', () => setMode(b.dataset.mode)));
+      applyMode();
+    }
     // tabs
     $$('.tab').forEach(t => t.addEventListener('click', () => {
       Sound.click();
@@ -1237,7 +1277,7 @@
       if (!sym) return;
       if (state.watchlist.includes(sym)) { toast(`${sym} already watched`, 'info'); return; }
       try {
-        await api(`/api/quote/${encodeURIComponent(sym)}`);
+        await api(withMode(`/api/quote/${encodeURIComponent(sym)}`));
       } catch { toast(`Symbol ${sym} not found`, 'error'); Sound.alert(); return; }
       state.watchlist.push(sym);
       saveJSON('churnlence.watchlist', state.watchlist);

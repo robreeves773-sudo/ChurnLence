@@ -51,6 +51,12 @@
       </div>
     </div>
 
+    <div class="mode-toggle" role="radiogroup" aria-label="Trading mode" id="mode-toggle"
+         title="SWING = daily candles + 9/21/50/200 EMAs. DAY = 15-min candles + tighter stops.">
+      <button type="button" data-mode="swing" class="active" role="radio" aria-checked="true">SWING</button>
+      <button type="button" data-mode="day"   role="radio" aria-checked="false">DAY</button>
+    </div>
+
     <nav class="tabs" role="tablist" aria-label="Sections">
       <button class="tab active" data-tab="overview" role="tab">
         <span class="tab-key">1</span>Overview

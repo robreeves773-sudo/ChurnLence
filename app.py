@@ -414,14 +414,49 @@ def _atr(highs: list[float], lows: list[float], closes: list[float], period: int
     return out[:n]
 
 
-def _overkill_signal(price: float, e9: float | None, e21: float | None, e50: float | None, e200: float | None) -> tuple[str, str]:
-    """Overkill-style read: buy near/below rising MAs, sell when price trades at a premium."""
+def _overkill_signal(
+    price: float,
+    e9: float | None,
+    e21: float | None,
+    e50: float | None,
+    e200: float | None,
+    mode: str = "swing",
+) -> tuple[str, str]:
+    """Overkill-style read: buy near/below rising MAs, sell when price trades at a premium.
+
+    Two flavours:
+    - swing (default): full daily setup with 9/21/50/200 EMAs, 1.5% near-MA
+      window and 8% premium threshold.  Slow-moving but high-confidence.
+    - day: intraday 15m bars, 9/21/50 EMAs only (200 needs 200 bars and we
+      only have ~480 of 15m), tighter 1% near-MA window and 5% premium
+      so signals fire on the actual moves day traders care about.
+    """
+    if mode == "day":
+        if None in (e9, e21, e50):
+            return "HOLD", "Not enough 15m bars for intraday EMAs"
+        stack_bull = e9 > e21 > e50  # type: ignore[operator]
+        stack_bear = e9 < e21 < e50  # type: ignore[operator]
+        near_ma = abs(price - e21) / price <= 0.01           # 1% (tighter)
+        premium = price > e21 * 1.05                         # 5% (tighter)
+        if stack_bull and near_ma:
+            return "BUY", "Intraday: bullish stack (9>21>50) at 21 EMA — entry"
+        if stack_bull and premium:
+            return "SELL", "Intraday: extended >5% above 21 EMA — take profit"
+        if stack_bear and price > e21:                       # type: ignore[operator]
+            return "SELL", "Intraday: bearish stack, price bouncing into 21 EMA"
+        if stack_bull:
+            return "HOLD", "Intraday bullish — wait for pullback"
+        if stack_bear:
+            return "HOLD", "Intraday bearish — no new longs"
+        return "HOLD", "Intraday: mixed EMAs"
+
+    # swing
     if None in (e9, e21, e50, e200):
         return "HOLD", "Not enough history for EMAs"
     stack_bull = e9 > e21 > e50 > e200  # type: ignore[operator]
     stack_bear = e9 < e21 < e50 < e200  # type: ignore[operator]
-    near_ma = abs(price - e21) / price <= 0.015  # within 1.5% of 21 EMA
-    premium = price > e21 * 1.08  # 8%+ extended above 21 EMA
+    near_ma = abs(price - e21) / price <= 0.015
+    premium = price > e21 * 1.08
     if stack_bull and near_ma:
         return "BUY", "Bullish EMA stack (9>21>50>200) and price near 21 EMA"
     if stack_bull and premium:
@@ -460,16 +495,19 @@ def _demo_history(symbol: str) -> tuple[list[str], list[float], list[float], lis
     return dates, highs, lows, closes, currency, name
 
 
-def _coingecko_history(coin_id: str) -> tuple[list[str], list[float], list[float], list[float], str, str] | None:
-    """Pull ~1 year of daily candles from CoinGecko (free tier, no key).
+def _coingecko_history(coin_id: str, days: int = 365) -> tuple[list[str], list[float], list[float], list[float], str, str] | None:
+    """Pull candles from CoinGecko free tier (no key).
 
-    /market_chart returns prices, market_caps, total_volumes — daily granularity
-    when ``days >= 90``. There's no high/low at this granularity on the free
-    plan, so we approximate the daily range with ±0.6% of close (similar to a
-    typical low-vol crypto bar). EMAs and signal logic are close-based, so the
-    only real impact is on ATR — which slightly understates volatility.
+    /market_chart granularity is implicit:
+      days=1               → 5-minute bars  (~288 of them — perfect for day mode)
+      days in [2, 90]      → hourly bars
+      days > 90            → daily bars     (used for swing mode)
+
+    There's no high/low at this granularity on the free plan, so we approximate
+    the daily range with ±0.6% of close.  EMAs and signal logic are close-based,
+    so the only real impact is on ATR — which slightly understates volatility.
     """
-    url = f"https://api.coingecko.com/api/v3/coins/{coin_id}/market_chart?vs_currency=usd&days=365&interval=daily"
+    url = f"https://api.coingecko.com/api/v3/coins/{coin_id}/market_chart?vs_currency=usd&days={days}"
     try:
         req = urllib.request.Request(url, headers={"User-Agent": "ChurnLence/1.0"})
         with urllib.request.urlopen(req, timeout=12) as resp:
@@ -481,17 +519,21 @@ def _coingecko_history(coin_id: str) -> tuple[list[str], list[float], list[float
     prices = payload.get("prices") or []
     if len(prices) < 30:  # need enough bars to compute meaningful EMAs
         return None
+    # Date format depends on granularity: intraday gets HH:MM, daily gets a
+    # bare date.  When days <= 90 the response is sub-daily so multiple ticks
+    # per day are expected and we keep them all.
+    intraday = days <= 90
+    fmt = "%Y-%m-%d %H:%M" if intraday else "%Y-%m-%d"
     dates: list[str] = []
     closes: list[float] = []
-    seen_dates: set[str] = set()
+    seen_keys: dict[str, int] = {}
     for ts_ms, px in prices:
-        d = datetime.fromtimestamp(ts_ms / 1000, tz=timezone.utc).strftime("%Y-%m-%d")
-        if d in seen_dates:
-            # Replace previous so the most-recent point for that date wins.
-            i = dates.index(d)
-            closes[i] = float(px)
+        d = datetime.fromtimestamp(ts_ms / 1000, tz=timezone.utc).strftime(fmt)
+        prev_idx = seen_keys.get(d)
+        if prev_idx is not None:
+            closes[prev_idx] = float(px)
             continue
-        seen_dates.add(d)
+        seen_keys[d] = len(dates)
         dates.append(d)
         closes.append(float(px))
     # Synthetic high/low band for ATR (kept tight so we don't fabricate volatility).
@@ -514,14 +556,26 @@ def _coingecko_history(coin_id: str) -> tuple[list[str], list[float], list[float
     return dates, highs, lows, closes, "USD", name
 
 
-def fetch_quote(symbol: str, force: bool = False) -> Quote | None:
+def fetch_quote(symbol: str, force: bool = False, mode: str = "swing") -> Quote | None:
+    """Pull a quote with EMA/ATR/signal in either swing or day-trade flavour.
+
+    mode="swing" (default): 1-year daily candles, EMA 9/21/50/200, 2×ATR stop.
+    mode="day":             5-day 15-minute candles (or 5-min on CoinGecko),
+                            EMA 9/21/50, 1×ATR stop, tighter signal thresholds.
+    """
     symbol = symbol.upper().strip()
+    mode = (mode or "swing").lower()
+    if mode not in ("swing", "day"):
+        mode = "swing"
     if not symbol:
         return None
+    cache_key = f"{symbol}:{mode}"
     now = time.time()
+    # Day-mode prices move faster; halve the cache TTL so we re-check sooner.
+    ttl = QUOTE_TTL // 2 if mode == "day" else QUOTE_TTL
     with _quote_lock:
-        cached = _quote_cache.get(symbol)
-        if cached and not force and now - cached[0] < QUOTE_TTL:
+        cached = _quote_cache.get(cache_key)
+        if cached and not force and now - cached[0] < ttl:
             return Quote(**cached[1])
 
     dates: list[str] = []
@@ -532,25 +586,27 @@ def fetch_quote(symbol: str, force: bool = False) -> Quote | None:
     name = symbol
     ticker = None
 
+    # yfinance period/interval per mode
+    yf_period, yf_interval = ("1y", "1d") if mode == "swing" else ("5d", "15m")
+
     if not DEMO_MODE:
         try:
             ticker = yf.Ticker(symbol)
-            hist = ticker.history(period="1y", interval="1d", auto_adjust=False)
+            hist = ticker.history(period=yf_period, interval=yf_interval, auto_adjust=False)
             if not hist.empty:
                 closes = [float(x) for x in hist["Close"].tolist()]
                 highs = [float(x) for x in hist["High"].tolist()]
                 lows = [float(x) for x in hist["Low"].tolist()]
-                dates = [d.strftime("%Y-%m-%d") for d in hist.index]
+                fmt = "%Y-%m-%d" if mode == "swing" else "%Y-%m-%d %H:%M"
+                dates = [d.strftime(fmt) for d in hist.index]
         except Exception as exc:
-            app.logger.warning("yfinance history failed for %s: %s", symbol, exc)
+            app.logger.warning("yfinance history failed for %s [%s]: %s", symbol, mode, exc)
 
     used_coingecko = False
     if not closes and not DEMO_MODE:
-        # Yahoo lacks coverage for many small caps and fresh listings — fall
-        # back to CoinGecko for any symbol we have a mapping for.
         cg_id = COINGECKO_MAP.get(symbol)
         if cg_id:
-            cg = _coingecko_history(cg_id)
+            cg = _coingecko_history(cg_id, days=(1 if mode == "day" else 365))
             if cg:
                 dates, highs, lows, closes, currency, name = cg
                 used_coingecko = True
@@ -564,7 +620,7 @@ def fetch_quote(symbol: str, force: bool = False) -> Quote | None:
     ema9 = _ema(closes, 9)
     ema21 = _ema(closes, 21)
     ema50 = _ema(closes, 50)
-    ema200 = _ema(closes, 200)
+    ema200 = _ema(closes, 200) if mode == "swing" else []
     atr_series = _atr(highs, lows, closes, 14) if highs and lows else []
 
     price = closes[-1]
@@ -573,7 +629,6 @@ def fetch_quote(symbol: str, force: bool = False) -> Quote | None:
     change_pct = (change / prev_close * 100) if prev_close else 0.0
 
     if not DEMO_MODE and not used_coingecko:
-        # Best-effort live price + metadata (yfinance only)
         try:
             fast = ticker.fast_info
             live = float(getattr(fast, "last_price", None) or fast.get("lastPrice") or 0) or None
@@ -589,21 +644,25 @@ def fetch_quote(symbol: str, force: bool = False) -> Quote | None:
         except Exception:
             name = symbol
     else:
-        # Add a small jitter on each non-cached fetch to simulate a ticking quote.
         jitter = random.uniform(-0.006, 0.006)
         price = max(0.01, price * (1 + jitter))
         change = price - prev_close
         change_pct = (change / prev_close * 100) if prev_close else 0.0
 
-    e9 = ema9[-1] if ema9 else None
-    e21 = ema21[-1] if ema21 else None
-    e50 = ema50[-1] if len(ema50) >= 50 else None
+    e9   = ema9[-1] if ema9 else None
+    e21  = ema21[-1] if ema21 else None
+    e50  = ema50[-1] if len(ema50) >= 50 else None
     e200 = ema200[-1] if len(ema200) >= 200 else None
     atr_last = atr_series[-1] if atr_series else None
-    atr_pct = (atr_last / price * 100) if (atr_last and price) else None
-    stop_ma = round(e21 * 0.97, 4) if e21 else None
-    stop_atr = round(price - atr_last * 2, 4) if atr_last else None
-    signal, reason = _overkill_signal(price, e9, e21, e50, e200)
+    atr_pct  = (atr_last / price * 100) if (atr_last and price) else None
+    # Tighter stops in day mode: 1% under EMA21 and 1×ATR (vs 3% / 2×ATR swing).
+    if mode == "day":
+        stop_ma  = round(e21 * 0.99, 6) if e21 else None
+        stop_atr = round(price - atr_last * 1.0, 6) if atr_last else None
+    else:
+        stop_ma  = round(e21 * 0.97, 4) if e21 else None
+        stop_atr = round(price - atr_last * 2.0, 4) if atr_last else None
+    signal, reason = _overkill_signal(price, e9, e21, e50, e200, mode=mode)
 
     history = []
     take = min(180, len(closes))
@@ -611,11 +670,11 @@ def fetch_quote(symbol: str, force: bool = False) -> Quote | None:
         history.append({
             "date": dates[i],
             "close": round(closes[i], 4),
-            "ema9": round(ema9[i], 4) if ema9 else None,
-            "ema21": round(ema21[i], 4) if ema21 else None,
-            "ema50": round(ema50[i], 4) if i >= 49 else None,
-            "ema200": round(ema200[i], 4) if i >= 199 else None,
-            "atr": round(atr_series[i], 4) if atr_series else None,
+            "ema9":  round(ema9[i], 4)   if ema9 else None,
+            "ema21": round(ema21[i], 4)  if ema21 else None,
+            "ema50": round(ema50[i], 4)  if (ema50 and i >= 49) else None,
+            "ema200": round(ema200[i], 4) if (ema200 and i >= 199) else None,
+            "atr":   round(atr_series[i], 4) if atr_series else None,
         })
 
     quote = Quote(
@@ -640,7 +699,7 @@ def fetch_quote(symbol: str, force: bool = False) -> Quote | None:
     )
 
     with _quote_lock:
-        _quote_cache[symbol] = (now, quote.as_dict())
+        _quote_cache[cache_key] = (now, quote.as_dict())
     return quote
 
 
@@ -739,7 +798,7 @@ def _position_size(symbol: str, account: float, risk_pct: float,
     }
 
 
-def _portfolio_snapshot(portfolio_id: int) -> dict:
+def _portfolio_snapshot(portfolio_id: int, mode: str = "swing") -> dict:
     with direct_db() as db:
         portfolio = db.execute("SELECT id, name FROM portfolios WHERE id = ?", (portfolio_id,)).fetchone()
         if not portfolio:
@@ -754,7 +813,7 @@ def _portfolio_snapshot(portfolio_id: int) -> dict:
     total_cost = 0.0
     total_day_change = 0.0
     for h in holdings:
-        q = fetch_quote(h["symbol"])
+        q = fetch_quote(h["symbol"], mode=mode)
         shares = float(h["shares"])
         cost = float(h["cost_basis"])
         if q is None:
@@ -890,7 +949,8 @@ def holdings(pid: int):
         )
         db.commit()
         return jsonify({"id": cur.lastrowid}), 201
-    return jsonify(_portfolio_snapshot(pid))
+    mode = (request.args.get("mode") or "swing").lower()
+    return jsonify(_portfolio_snapshot(pid, mode=mode))
 
 
 @app.route("/api/holdings/<int:hid>", methods=["PATCH", "DELETE"])
@@ -916,7 +976,8 @@ def holding_detail(hid: int):
 
 @app.route("/api/quote/<symbol>")
 def quote(symbol: str):
-    q = fetch_quote(symbol, force=request.args.get("force") == "1")
+    mode = (request.args.get("mode") or "swing").lower()
+    q = fetch_quote(symbol, force=request.args.get("force") == "1", mode=mode)
     if q is None:
         return jsonify({"error": "not found"}), 404
     return jsonify(q.as_dict())
@@ -1567,25 +1628,25 @@ def stream(pid: int):
         parts.append(f"V{round(t.get('value') or 0, 2)}|P{round(t.get('pl') or 0, 2)}")
         return hashlib.sha1("\n".join(parts).encode()).hexdigest()
 
+    mode = (request.args.get("mode") or "swing").lower()
+    # Day mode pushes more often because intraday prices move faster.
+    interval = max(2, STREAM_INTERVAL // 2) if mode == "day" else STREAM_INTERVAL
+
     def generate() -> Iterable[bytes]:
         last_digest = None
         idle_ticks = 0
-        # First payload always goes out so the client can render initial state.
-        first = _portfolio_snapshot(pid)
+        first = _portfolio_snapshot(pid, mode=mode)
         yield f"data: {json.dumps(first)}\n\n".encode()
         last_digest = _digest(first)
         while True:
-            time.sleep(STREAM_INTERVAL)
-            snap = _portfolio_snapshot(pid)
+            time.sleep(interval)
+            snap = _portfolio_snapshot(pid, mode=mode)
             digest = _digest(snap)
             if digest == last_digest:
                 idle_ticks += 1
-                # Heartbeat as an SSE comment line — keeps proxies happy
-                # without triggering a client onmessage handler.
                 yield b": keep-alive\n\n"
-                # If we've been idle a while, slow the loop down to halve CPU.
                 if idle_ticks >= 6:
-                    time.sleep(STREAM_INTERVAL)
+                    time.sleep(interval)
                 continue
             idle_ticks = 0
             last_digest = digest

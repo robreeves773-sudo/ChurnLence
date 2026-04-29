@@ -589,6 +589,37 @@ select:focus, input:focus {
 .notify-btn.enabled { color: var(--lime); border-color: rgba(0,255,156,0.35); }
 .notify-btn.denied { color: var(--danger); border-color: rgba(255,85,119,0.35); }
 
+/* trading-mode toggle (SWING / DAY) */
+.mode-toggle {
+  display: inline-flex;
+  border: 1px solid var(--line-strong);
+  border-radius: 999px;
+  padding: 3px;
+  background: rgba(255,255,255,0.02);
+  align-self: center;
+  user-select: none;
+}
+.mode-toggle button {
+  appearance: none;
+  border: 0;
+  background: transparent;
+  color: var(--ink-mute);
+  padding: 6px 14px;
+  font-size: 11px;
+  font-weight: 700;
+  letter-spacing: 0.1em;
+  cursor: pointer;
+  border-radius: 999px;
+  font-family: 'JetBrains Mono', monospace;
+  transition: color 0.15s, background 0.2s;
+}
+.mode-toggle button:hover { color: var(--ink); }
+.mode-toggle button.active {
+  background: var(--gradient);
+  color: #0a0e16;
+}
+.mode-toggle button[data-mode="day"].active { background: linear-gradient(135deg, #ff9e3d, #ff3d7f); }
+
 /* portfolio context menu */
 .portfolio-picker { position: relative; display: flex; gap: 4px; align-items: center; }
 .menu {
