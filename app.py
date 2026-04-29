@@ -1495,6 +1495,135 @@ def digest_send_now(pid: int):
     return jsonify({"ok": True, "to": row["email"], "subject": subject})
 
 
+# ---------------------------------------------------------------------------
+# Memecoin scanner — GeckoTerminal trending / new pools (free, no API key)
+# ---------------------------------------------------------------------------
+
+_scanner_cache: dict[str, tuple[float, list]] = {}
+_SCANNER_TTL = 60  # seconds — be polite with the free API
+
+
+def _scanner_fetch(network: str, view: str) -> list[dict]:
+    """Pull trending or new pools for a given chain via GeckoTerminal.
+
+    network: 'solana' / 'eth' / 'base' / etc. (we expose 'solana' first).
+    view:    'trending_pools' | 'new_pools'
+
+    Returns a normalised list — symbol, name, mc/liq, 1h/24h%, age, dexscreener URL.
+    """
+    cache_key = f"{network}:{view}"
+    now = time.time()
+    cached = _scanner_cache.get(cache_key)
+    if cached and now - cached[0] < _SCANNER_TTL:
+        return cached[1]
+
+    url = f"https://api.geckoterminal.com/api/v2/networks/{network}/{view}?include=base_token"
+    try:
+        req = urllib.request.Request(url, headers={
+            "User-Agent": "ChurnLence/1.0",
+            "Accept": "application/json;version=20230302",
+        })
+        with urllib.request.urlopen(req, timeout=10) as resp:
+            payload = json.loads(resp.read())
+    except Exception as exc:
+        app.logger.warning("scanner fetch failed [%s/%s]: %s", network, view, exc)
+        return cached[1] if cached else []
+
+    pools = payload.get("data") or []
+    included = {item["id"]: item for item in (payload.get("included") or [])}
+    out: list[dict] = []
+    for p in pools:
+        a = p.get("attributes") or {}
+        rels = (p.get("relationships") or {}).get("base_token", {}).get("data") or {}
+        token_meta = included.get(rels.get("id"), {}).get("attributes", {}) if rels else {}
+        try:
+            price_change_h1  = float((a.get("price_change_percentage") or {}).get("h1")  or 0)
+            price_change_h24 = float((a.get("price_change_percentage") or {}).get("h24") or 0)
+            price_change_h6  = float((a.get("price_change_percentage") or {}).get("h6")  or 0)
+            volume_h24       = float((a.get("volume_usd") or {}).get("h24") or 0)
+            transactions_h24 = (a.get("transactions") or {}).get("h24") or {}
+            buys_h24  = int(transactions_h24.get("buys")  or 0)
+            sells_h24 = int(transactions_h24.get("sells") or 0)
+            liquidity = float(a.get("reserve_in_usd") or 0)
+            mc        = float(a.get("market_cap_usd") or a.get("fdv_usd") or 0)
+        except (TypeError, ValueError):
+            continue
+
+        symbol = (token_meta.get("symbol") or "").upper()
+        name   = token_meta.get("name") or symbol or "?"
+        token_addr = token_meta.get("address") or ""
+        # Pool address is in the pool's own attributes
+        pool_addr = a.get("address") or ""
+        out.append({
+            "symbol":     symbol,
+            "name":       name,
+            "price_usd":  float(a.get("base_token_price_usd") or 0),
+            "change_1h":  round(price_change_h1, 2),
+            "change_6h":  round(price_change_h6, 2),
+            "change_24h": round(price_change_h24, 2),
+            "volume_24h": round(volume_h24, 2),
+            "liquidity":  round(liquidity, 2),
+            "market_cap": round(mc, 2),
+            "buys_24h":   buys_h24,
+            "sells_24h":  sells_h24,
+            "buy_sell_ratio": round(buys_h24 / max(1, sells_h24), 2),
+            "pool_created_at": a.get("pool_created_at"),
+            "dex":            a.get("dex_id") or "",
+            "token_address":  token_addr,
+            "pool_address":   pool_addr,
+            "dexscreener_url": f"https://dexscreener.com/{network}/{pool_addr}" if pool_addr else "",
+            "geckoterminal_url": f"https://www.geckoterminal.com/{network}/pools/{pool_addr}" if pool_addr else "",
+            "score":           _scanner_score(price_change_h24, volume_h24, liquidity, buys_h24, sells_h24),
+        })
+
+    out.sort(key=lambda x: -x["score"])
+    _scanner_cache[cache_key] = (now, out)
+    return out
+
+
+def _scanner_score(change_24h: float, volume_24h: float, liquidity: float,
+                   buys: int, sells: int) -> float:
+    """Crude 'is this real momentum or a rug?' score.
+
+    Rewards: positive 24h move with high volume + healthy liquidity + buyers
+             outnumbering sellers.  Penalises: dust liquidity (rugs), wash-
+             traded pumps where sells dominate.
+    """
+    if liquidity < 5_000:                # below $5k liq is almost always a rug
+        return change_24h * 0.1
+    momentum = max(0, change_24h)
+    vol_factor = min(volume_24h / 100_000, 5)   # cap so megacaps don't dominate
+    liq_factor = min(liquidity / 50_000, 5)
+    flow = (buys + 1) / (sells + 1)             # bias to buy pressure
+    return momentum * vol_factor * liq_factor * min(flow, 4)
+
+
+@app.route("/api/scanner/<view>")
+def scanner(view: str):
+    """Returns trending or new pools.  view ∈ {trending, new}.  ?network=solana|eth|base.
+    ?min_liq=<usd> filters out illiquid junk; default 5_000."""
+    if view not in ("trending", "new"):
+        return jsonify({"error": "view must be 'trending' or 'new'"}), 400
+    network = (request.args.get("network") or "solana").lower()
+    if network not in ("solana", "eth", "base", "bsc", "polygon_pos", "arbitrum"):
+        return jsonify({"error": "unsupported network"}), 400
+    try:
+        min_liq = float(request.args.get("min_liq") or 5000)
+    except ValueError:
+        min_liq = 5000
+    api_view = "trending_pools" if view == "trending" else "new_pools"
+    pools = _scanner_fetch(network, api_view)
+    if min_liq:
+        pools = [p for p in pools if p["liquidity"] >= min_liq]
+    return jsonify({
+        "network": network,
+        "view": view,
+        "count": len(pools),
+        "pools": pools[:50],
+        "as_of": datetime.now(timezone.utc).isoformat(),
+    })
+
+
 @app.route("/api/portfolios/<int:pid>/signal-events")
 def list_signal_events(pid: int):
     db = get_db()

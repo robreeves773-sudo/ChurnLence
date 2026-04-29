@@ -79,6 +79,9 @@
       <button class="tab" data-tab="backtest" role="tab">
         <span class="tab-key">7</span>Backtest
       </button>
+      <button class="tab" data-tab="scanner" role="tab">
+        <span class="tab-key">8</span>Scanner
+      </button>
       <div class="tab-underline" aria-hidden="true"></div>
     </nav>
 
@@ -355,6 +358,71 @@
           <table class="holdings-table">
             <thead><tr><th>Date</th><th>Action</th><th class="num">Price</th><th class="num">Shares</th><th class="num">Value</th></tr></thead>
             <tbody id="backtest-trades-body"></tbody>
+          </table>
+        </div>
+      </article>
+    </section>
+
+    <!-- SCANNER TAB -------------------------------------------------------- -->
+    <section class="panel" data-panel="scanner">
+      <div class="holdings-head">
+        <h2>Memecoin scanner</h2>
+        <span class="card-sub">Trending Solana pools via GeckoTerminal · refreshes every 60s · this is gambling, not investing</span>
+      </div>
+      <div class="scanner-controls glass-card">
+        <div class="scanner-row">
+          <div class="scanner-tabs" id="scanner-view-tabs" role="tablist">
+            <button type="button" data-view="trending" class="active" role="tab" aria-selected="true">🔥 Trending</button>
+            <button type="button" data-view="new"      role="tab" aria-selected="false">✨ New launches</button>
+          </div>
+          <div class="scanner-filters">
+            <label>Network
+              <select id="scanner-network">
+                <option value="solana" selected>Solana</option>
+                <option value="base">Base</option>
+                <option value="eth">Ethereum</option>
+                <option value="bsc">BSC</option>
+                <option value="arbitrum">Arbitrum</option>
+              </select>
+            </label>
+            <label>Min liquidity
+              <select id="scanner-minliq">
+                <option value="5000">$5K</option>
+                <option value="25000" selected>$25K</option>
+                <option value="100000">$100K</option>
+                <option value="500000">$500K</option>
+              </select>
+            </label>
+            <button type="button" class="ghost-btn" id="scanner-refresh" title="Refresh now">↻ Refresh</button>
+          </div>
+        </div>
+        <p class="scanner-warn">
+          ⚠ <strong>This is a casino floor, not a strategy.</strong>
+          Most low-MC tokens go to zero in days. Use small position sizes, set a stop, take profits early.
+          Click any row to research it on DexScreener / GeckoTerminal before buying.
+        </p>
+      </div>
+      <article class="glass-card" style="margin-top:14px;">
+        <div class="table-wrap">
+          <table class="holdings-table" id="scanner-table">
+            <thead>
+              <tr>
+                <th>Token</th>
+                <th class="num" title="Buy/sell pressure ratio">Score</th>
+                <th class="num">Price</th>
+                <th class="num">1h</th>
+                <th class="num">6h</th>
+                <th class="num">24h</th>
+                <th class="num" title="Total trading volume in last 24h">Vol 24h</th>
+                <th class="num" title="DEX liquidity">Liq</th>
+                <th class="num" title="Buys / sells (last 24h)">Buys / Sells</th>
+                <th>DEX</th>
+                <th></th>
+              </tr>
+            </thead>
+            <tbody id="scanner-body">
+              <tr class="empty-row"><td colspan="11">Click <strong>Refresh</strong> or switch tabs to load.</td></tr>
+            </tbody>
           </table>
         </div>
       </article>

@@ -126,7 +126,8 @@
     $$('.tab').forEach(t => t.classList.toggle('active', t.dataset.tab === name));
     $$('.panel').forEach(p => p.classList.toggle('active', p.dataset.panel === name));
     moveTabUnderline();
-    if (name === 'charts') renderDetailChart();
+    if (name === 'charts')  renderDetailChart();
+    if (name === 'scanner') refreshScanner();   // auto-load on first visit
   }
   function moveTabUnderline() {
     const active = $('.tab.active');
@@ -1094,6 +1095,90 @@
     if (state.chartSymbol) renderDetailChart();
   }
 
+  // ---------- memecoin scanner ---------------------------------------------
+  const scannerState = {
+    view: 'trending',  // 'trending' | 'new'
+    network: 'solana',
+    minLiq: 25000,
+    pools: [],
+    loadedAt: 0,
+  };
+
+  async function refreshScanner(force = false) {
+    const tbody = $('#scanner-body');
+    if (!tbody) return;
+    // Cache for 30s on the client too
+    if (!force && Date.now() - scannerState.loadedAt < 30_000 && scannerState.pools.length) {
+      renderScanner(scannerState.pools);
+      return;
+    }
+    tbody.innerHTML = '<tr class="empty-row"><td colspan="11">Loading…</td></tr>';
+    try {
+      const r = await api(`/api/scanner/${scannerState.view}?network=${scannerState.network}&min_liq=${scannerState.minLiq}`);
+      scannerState.pools = r.pools || [];
+      scannerState.loadedAt = Date.now();
+      renderScanner(scannerState.pools);
+    } catch (err) {
+      tbody.innerHTML = `<tr class="empty-row"><td colspan="11" style="color:var(--danger)">Scanner failed: ${escapeHtml(err.message)}</td></tr>`;
+    }
+  }
+
+  function renderScanner(pools) {
+    const tbody = $('#scanner-body');
+    if (!pools.length) {
+      tbody.innerHTML = '<tr class="empty-row"><td colspan="11">No pools matched. Lower the min liquidity filter or try a different network.</td></tr>';
+      return;
+    }
+    const fmtCompact = v => {
+      if (v == null) return '—';
+      const a = Math.abs(v);
+      if (a >= 1e9) return '$' + (v/1e9).toFixed(2) + 'B';
+      if (a >= 1e6) return '$' + (v/1e6).toFixed(2) + 'M';
+      if (a >= 1e3) return '$' + (v/1e3).toFixed(1) + 'K';
+      return '$' + v.toFixed(2);
+    };
+    const arrow = v => v >= 0 ? '▲' : '▼';
+    const cls = v => v >= 0 ? 'up' : 'down';
+    tbody.innerHTML = pools.map(p => {
+      const sigBadge = p.score > 50 ? '<span class="ac-tag" style="background:rgba(0,255,156,0.15);color:#00ff9c;">HOT</span>'
+                     : p.score > 15 ? '<span class="ac-tag">warm</span>'
+                     : '';
+      return `
+        <tr data-sym="${escapeHtml(p.symbol)}" data-pool="${escapeHtml(p.pool_address)}">
+          <td>
+            <span class="sym">${escapeHtml(p.symbol || '?')}</span>
+            <span class="sym-name">${escapeHtml((p.name || '').slice(0, 28))} ${sigBadge}</span>
+          </td>
+          <td class="num">${p.score.toFixed(0)}</td>
+          <td class="num">${p.price_usd != null ? p.price_usd.toLocaleString('en-US', { maximumSignificantDigits: 4 }) : '—'}</td>
+          <td class="num ${cls(p.change_1h)}">${arrow(p.change_1h)} ${p.change_1h.toFixed(1)}%</td>
+          <td class="num ${cls(p.change_6h)}">${arrow(p.change_6h)} ${p.change_6h.toFixed(1)}%</td>
+          <td class="num ${cls(p.change_24h)}">${arrow(p.change_24h)} ${p.change_24h.toFixed(1)}%</td>
+          <td class="num">${fmtCompact(p.volume_24h)}</td>
+          <td class="num">${fmtCompact(p.liquidity)}</td>
+          <td class="num"><span class="up">${p.buys_24h}</span> / <span class="down">${p.sells_24h}</span></td>
+          <td><span style="font-size:11px;color:var(--ink-mute);text-transform:uppercase;">${escapeHtml(p.dex)}</span></td>
+          <td class="num row-actions">
+            <a class="row-act" href="${escapeHtml(p.dexscreener_url)}" target="_blank" rel="noopener" title="Open on DexScreener">View</a>
+            <button class="row-act" data-watch="${escapeHtml(p.symbol)}" title="Add to watchlist">Watch</button>
+          </td>
+        </tr>`;
+    }).join('');
+
+    $$('#scanner-body [data-watch]').forEach(btn => {
+      btn.addEventListener('click', (e) => {
+        e.stopPropagation();
+        const sym = btn.dataset.watch + '-USD';
+        if (state.watchlist.includes(sym)) { toast(`${sym} already on watchlist`, 'info'); return; }
+        state.watchlist.push(sym);
+        saveJSON('churnlence.watchlist', state.watchlist);
+        refreshWatchlist();
+        toast(`${sym} added to watchlist`, 'success');
+        Sound.ding();
+      });
+    });
+  }
+
   function bind() {
     // mode toggle
     const tg = $('#mode-toggle');
@@ -1111,7 +1196,7 @@
     // keyboard shortcuts
     window.addEventListener('keydown', (e) => {
       if (document.activeElement && /INPUT|TEXTAREA|SELECT/.test(document.activeElement.tagName)) return;
-      const map = { '1':'overview','2':'holdings','3':'charts','4':'signals','5':'watchlist','6':'planner','7':'backtest' };
+      const map = { '1':'overview','2':'holdings','3':'charts','4':'signals','5':'watchlist','6':'planner','7':'backtest','8':'scanner' };
       if (map[e.key]) { setTab(map[e.key]); Sound.click(); }
       else if (e.key.toLowerCase() === 'n') { openModal('add-holding-modal'); Sound.click(); }
       else if (e.key.toLowerCase() === 'm') toggleSound();
@@ -1356,6 +1441,25 @@
       state.chartSymbol = e.target.value;
       renderDetailChart();
     });
+
+    // scanner
+    $$('#scanner-view-tabs button').forEach(b => b.addEventListener('click', () => {
+      $$('#scanner-view-tabs button').forEach(x => x.classList.toggle('active', x === b));
+      scannerState.view = b.dataset.view;
+      refreshScanner(true);
+    }));
+    const netSel = $('#scanner-network');
+    if (netSel) netSel.addEventListener('change', (e) => {
+      scannerState.network = e.target.value;
+      refreshScanner(true);
+    });
+    const liqSel = $('#scanner-minliq');
+    if (liqSel) liqSel.addEventListener('change', (e) => {
+      scannerState.minLiq = parseInt(e.target.value, 10);
+      refreshScanner(true);
+    });
+    const refreshBtn = $('#scanner-refresh');
+    if (refreshBtn) refreshBtn.addEventListener('click', () => refreshScanner(true));
 
     // ----- sell modal -----
     $('#sell-form').addEventListener('submit', async (e) => {
