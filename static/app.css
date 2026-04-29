@@ -672,6 +672,54 @@ select:focus, input:focus {
 .hcard-grid .n-val { font-family: 'JetBrains Mono', monospace; font-weight: 600; font-size: 13px; display: block; }
 .hcard-actions { display: flex; gap: 8px; justify-content: flex-end; }
 
+/* Market regime strip (top of Overview) */
+.market-regime {
+  display: grid;
+  grid-template-columns: repeat(4, 1fr);
+  gap: 24px;
+  padding: 18px 22px;
+  margin-bottom: 18px;
+}
+.mr-cell { display: flex; flex-direction: column; gap: 4px; min-width: 0; }
+.mr-label { font-size: 10px; text-transform: uppercase; letter-spacing: 0.1em; color: var(--ink-mute); }
+.mr-value { font-size: 22px; font-weight: 700; font-family: 'JetBrains Mono', monospace; display: flex; gap: 10px; align-items: baseline; }
+.mr-fg-tag {
+  font-size: 10px; padding: 3px 8px; border-radius: 4px;
+  text-transform: uppercase; letter-spacing: 0.08em;
+}
+.mr-fg-tag.extreme-fear  { background: rgba(255,85,119,0.18);  color: #ff5577; }
+.mr-fg-tag.fear          { background: rgba(255,158,61,0.18);  color: #ff9e3d; }
+.mr-fg-tag.neutral       { background: rgba(255,255,255,0.06); color: var(--ink-dim); }
+.mr-fg-tag.greed         { background: rgba(0,229,255,0.15);   color: var(--cyan); }
+.mr-fg-tag.extreme-greed { background: rgba(0,255,156,0.18);   color: var(--lime); }
+.mr-sub { font-size: 11px; color: var(--ink-mute); }
+.mr-sub.up   { color: var(--success); }
+.mr-sub.down { color: var(--danger); }
+.mr-regime .mr-value { font-size: 14px; line-height: 1.3; font-family: inherit; }
+@media (max-width: 980px) {
+  .market-regime { grid-template-columns: repeat(2, 1fr); gap: 14px; }
+}
+
+/* RSI badge — small chip used in tables and cards */
+.rsi-chip {
+  font-family: 'JetBrains Mono', monospace;
+  font-size: 11px; font-weight: 600;
+  padding: 2px 7px; border-radius: 4px;
+  letter-spacing: 0.04em;
+}
+.rsi-chip.overbought { background: rgba(255,85,119,0.15); color: #ff7a99; }
+.rsi-chip.oversold   { background: rgba(0,255,156,0.15); color: var(--lime); }
+.rsi-chip.neutral    { background: rgba(255,255,255,0.04); color: var(--ink-dim); }
+
+/* News list (Charts tab) */
+.news-card .card-head { display: flex; justify-content: space-between; align-items: baseline; margin-bottom: 12px; }
+.news-list { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 10px; }
+.news-list li { padding: 10px 12px; border-radius: 8px; background: rgba(255,255,255,0.02); border: 1px solid var(--line); }
+.news-list a { color: var(--ink); text-decoration: none; font-size: 13px; line-height: 1.4; display: block; }
+.news-list a:hover { color: var(--cyan); }
+.news-list .news-meta { font-size: 11px; color: var(--ink-mute); margin-top: 4px; display: flex; gap: 10px; }
+.news-list .news-empty { color: var(--ink-mute); font-style: italic; padding: 18px; text-align: center; }
+
 /* Memecoin scanner */
 .scanner-controls { padding: 16px; }
 .scanner-row { display: flex; justify-content: space-between; gap: 16px; align-items: flex-end; flex-wrap: wrap; }

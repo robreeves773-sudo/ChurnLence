@@ -696,6 +696,92 @@
   }
 
   // ---------- concentration / HHI -------------------------------------------
+  // ---------- market regime (top of Overview) ------------------------------
+  async function refreshMarket() {
+    const card = $('#market-regime');
+    if (!card) return;
+    try {
+      const m = await api('/api/market');
+      // Hide the card entirely if both APIs failed (sandbox case)
+      if (!m.fear_greed && !m.global) { card.hidden = true; return; }
+      card.hidden = false;
+      if (m.fear_greed) {
+        const v = m.fear_greed.value;
+        $('#mr-fg-num').textContent = v;
+        const lbl = (m.fear_greed.label || 'Neutral');
+        const tag = $('#mr-fg-label');
+        tag.textContent = lbl.toUpperCase();
+        const cls = lbl.toLowerCase().replace(/\s+/g, '-');
+        tag.className = 'mr-fg-tag ' + cls;
+        const d = m.fear_greed.delta;
+        const dEl = $('#mr-fg-delta');
+        dEl.textContent = d > 0 ? `↑ ${d} since yesterday` : d < 0 ? `↓ ${Math.abs(d)} since yesterday` : 'flat';
+        dEl.className = 'mr-sub ' + (d > 0 ? 'up' : d < 0 ? 'down' : '');
+      }
+      if (m.global) {
+        $('#mr-btc-dom').textContent = m.global.btc_dominance + '%';
+        $('#mr-eth-dom').textContent = `ETH ${m.global.eth_dominance}%`;
+        const mcap = m.global.total_mcap_usd || 0;
+        $('#mr-mcap').textContent = '$' + (mcap / 1e12).toFixed(2) + 'T';
+        const ch = m.global.mcap_change_24h_pct;
+        const chEl = $('#mr-mcap-chg');
+        if (ch != null) {
+          chEl.textContent = (ch >= 0 ? '▲ ' : '▼ ') + Math.abs(ch).toFixed(2) + '% 24h';
+          chEl.className = 'mr-sub ' + (ch >= 0 ? 'up' : 'down');
+        }
+      }
+      $('#mr-regime').textContent = m.regime || '—';
+    } catch (err) {
+      card.hidden = true;
+    }
+  }
+
+  // ---------- News strip (Charts tab) --------------------------------------
+  const _newsCache = {};   // symbol -> { ts, items }
+  async function refreshNews(symbol) {
+    if (!symbol) return;
+    const card = $('#news-card');
+    const list = $('#news-list');
+    const sub = $('#news-symbol');
+    if (!card || !list) return;
+    sub.textContent = symbol;
+    card.hidden = false;
+    list.innerHTML = '<li class="news-empty">Loading…</li>';
+    const cached = _newsCache[symbol];
+    if (cached && Date.now() - cached.ts < 5 * 60 * 1000) {
+      renderNews(cached.items);
+      return;
+    }
+    try {
+      const items = await api(`/api/news/${encodeURIComponent(symbol)}`);
+      _newsCache[symbol] = { ts: Date.now(), items };
+      renderNews(items);
+    } catch (err) {
+      list.innerHTML = `<li class="news-empty">Couldn't load news: ${escapeHtml(err.message)}</li>`;
+    }
+  }
+  function renderNews(items) {
+    const list = $('#news-list');
+    if (!items || !items.length) {
+      list.innerHTML = '<li class="news-empty">No recent headlines.</li>';
+      return;
+    }
+    list.innerHTML = items.slice(0, 8).map(n => {
+      const when = n.published ? new Date(n.published).toLocaleString() : '';
+      const votes = (n.votes && (n.votes.positive || n.votes.negative))
+        ? `<span class="up">▲ ${n.votes.positive||0}</span> · <span class="down">▼ ${n.votes.negative||0}</span>`
+        : '';
+      return `<li>
+        <a href="${escapeHtml(n.url)}" target="_blank" rel="noopener">${escapeHtml(n.title)}</a>
+        <div class="news-meta">
+          <span>${escapeHtml(n.source || n.domain || '')}</span>
+          <span>${escapeHtml(when)}</span>
+          ${votes ? `<span>${votes}</span>` : ''}
+        </div>
+      </li>`;
+    }).join('');
+  }
+
   // ---------- Today's actions card -----------------------------------------
   function renderTodaysActions(snap) {
     const wrap = $('#actions-wrap');
@@ -723,11 +809,14 @@
       const up = (r.change_pct || 0) >= 0;
       const stop = r.stop_atr ?? r.stop_loss;
       const tag = r._watchlist ? '<span class="ac-tag">watchlist</span>' : '';
+      const rsi = r.rsi != null
+        ? `<span class="rsi-chip ${r.rsi_label || 'neutral'}" title="14-period RSI — ${r.rsi_label}">RSI ${r.rsi.toFixed(0)}</span>`
+        : '';
       return `
         <div class="action-row" data-sym="${r.symbol}">
           <span class="sig-chip ${r.signal.toLowerCase()}">${r.signal}</span>
           <div class="action-main">
-            <div class="action-sym">${r.symbol} ${tag}</div>
+            <div class="action-sym">${r.symbol} ${tag} ${rsi}</div>
             <div class="action-reason">${escapeHtml(r.signal_reason || '')}</div>
           </div>
           <div class="action-px">
@@ -860,9 +949,14 @@
       $('#chart-symbol-label').textContent = q.symbol + (q.name ? ` · ${q.name}` : '');
       $('#chart-price').textContent = fmtMoneySm(q.price);
       const chg = q.change_pct ?? 0;
+      const rsiHtml = q.rsi != null
+        ? `<span class="rsi-chip ${q.rsi_label || 'neutral'}">RSI ${q.rsi.toFixed(0)}</span>`
+        : '';
       $('#chart-sub').innerHTML =
         `<span class="${chg >= 0 ? 'up' : 'down'}" style="color:${chg>=0?'var(--success)':'var(--danger)'}">${chg>=0?'▲':'▼'} ${fmtPct(chg)}</span>
-         &nbsp; EMA21 ${fmtMoneySm(q.ema21)} · Stop MA ${fmtMoneySm(q.stop_loss)} · Stop ATR ${fmtMoneySm(q.stop_atr)} · ATR% ${q.atr_pct != null ? fmtPct(q.atr_pct) : '—'} · <span class="sig-chip ${(q.signal||'hold').toLowerCase()}">${q.signal}</span>`;
+         &nbsp; EMA21 ${fmtMoneySm(q.ema21)} · Stop MA ${fmtMoneySm(q.stop_loss)} · Stop ATR ${fmtMoneySm(q.stop_atr)} · ATR% ${q.atr_pct != null ? fmtPct(q.atr_pct) : '—'} · ${rsiHtml} · <span class="sig-chip ${(q.signal||'hold').toLowerCase()}">${q.signal}</span>`;
+      // Fetch news for the symbol (non-blocking)
+      refreshNews(state.chartSymbol);
 
       const hist = q.history || [];
       const labels = hist.map(h => h.date);
@@ -1854,9 +1948,11 @@
       openStream();
       refreshWatchlist();
       refreshTransactions();
+      refreshMarket();
       applyLaunchTab();
       setInterval(refreshWatchlist, 30000);   // watchlist refreshes every 30s
       setInterval(refreshTransactions, 60000); // transactions every minute
+      setInterval(refreshMarket, 5 * 60 * 1000); // market regime every 5 min
       setTimeout(moveTabUnderline, 50);
     } catch (err) {
       toast(`Boot failed: ${err.message}`, 'error');

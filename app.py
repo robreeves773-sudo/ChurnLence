@@ -358,6 +358,8 @@ class Quote:
     ema200: float | None
     atr: float | None             # 14-period Average True Range
     atr_pct: float | None         # ATR as % of price (volatility gauge)
+    rsi: float | None             # 14-period RSI (>70 overbought, <30 oversold)
+    rsi_label: str                # "overbought" | "oversold" | "neutral"
     stop_loss: float | None       # Overkill MA-style: ~3% below EMA21
     stop_atr: float | None        # Volatility-aware: price - 2×ATR
     signal: str                   # BUY / SELL / HOLD
@@ -409,6 +411,36 @@ def _atr(highs: list[float], lows: list[float], closes: list[float], period: int
     for i in range(period, n):
         atr = (atr * (period - 1) + trs[i]) / period
         out.append(atr)
+    return out[:n]
+
+
+def _rsi(closes: list[float], period: int = 14) -> list[float]:
+    """Wilder's RSI (Relative Strength Index).
+
+    >70 = overbought (often fades), <30 = oversold (often bounces).  We use
+    50 as a trend-bias filter: above 50 = bullish bias, below 50 = bearish.
+    The padding strategy mirrors _atr — we pad the first `period` indices with
+    the seed value so output length matches `closes`.
+    """
+    n = len(closes)
+    if n < period + 1:
+        return [50.0] * n  # not enough data — neutral
+    gains = [0.0]
+    losses = [0.0]
+    for i in range(1, n):
+        diff = closes[i] - closes[i - 1]
+        gains.append(diff if diff > 0 else 0.0)
+        losses.append(-diff if diff < 0 else 0.0)
+    avg_gain = sum(gains[1:period + 1]) / period
+    avg_loss = sum(losses[1:period + 1]) / period
+    out: list[float] = [50.0] * (period)
+    rs = (avg_gain / avg_loss) if avg_loss > 0 else 0.0
+    out.append(100 - 100 / (1 + rs) if avg_loss > 0 else 100.0)
+    for i in range(period + 1, n):
+        avg_gain = (avg_gain * (period - 1) + gains[i]) / period
+        avg_loss = (avg_loss * (period - 1) + losses[i]) / period
+        rs = (avg_gain / avg_loss) if avg_loss > 0 else 0.0
+        out.append(100 - 100 / (1 + rs) if avg_loss > 0 else 100.0)
     return out[:n]
 
 
@@ -620,6 +652,7 @@ def fetch_quote(symbol: str, force: bool = False, mode: str = "swing") -> Quote 
     ema50 = _ema(closes, 50)
     ema200 = _ema(closes, 200) if mode == "swing" else []
     atr_series = _atr(highs, lows, closes, 14) if highs and lows else []
+    rsi_series = _rsi(closes, 14)
 
     price = closes[-1]
     prev_close = closes[-2] if len(closes) > 1 else price
@@ -653,6 +686,15 @@ def fetch_quote(symbol: str, force: bool = False, mode: str = "swing") -> Quote 
     e200 = ema200[-1] if len(ema200) >= 200 else None
     atr_last = atr_series[-1] if atr_series else None
     atr_pct  = (atr_last / price * 100) if (atr_last and price) else None
+    rsi_last = rsi_series[-1] if rsi_series else None
+    if rsi_last is None:
+        rsi_label = "neutral"
+    elif rsi_last >= 70:
+        rsi_label = "overbought"
+    elif rsi_last <= 30:
+        rsi_label = "oversold"
+    else:
+        rsi_label = "neutral"
     # Tighter stops in day mode: 1% under EMA21 and 1×ATR (vs 3% / 2×ATR swing).
     if mode == "day":
         stop_ma  = round(e21 * 0.99, 6) if e21 else None
@@ -673,6 +715,7 @@ def fetch_quote(symbol: str, force: bool = False, mode: str = "swing") -> Quote 
             "ema50": round(ema50[i], 4)  if (ema50 and i >= 49) else None,
             "ema200": round(ema200[i], 4) if (ema200 and i >= 199) else None,
             "atr":   round(atr_series[i], 4) if atr_series else None,
+            "rsi":   round(rsi_series[i], 1) if rsi_series else None,
         })
 
     quote = Quote(
@@ -688,6 +731,8 @@ def fetch_quote(symbol: str, force: bool = False, mode: str = "swing") -> Quote 
         ema200=round(e200, 4) if e200 else None,
         atr=round(atr_last, 4) if atr_last else None,
         atr_pct=round(atr_pct, 3) if atr_pct else None,
+        rsi=round(rsi_last, 1) if rsi_last is not None else None,
+        rsi_label=rsi_label,
         stop_loss=stop_ma,
         stop_atr=stop_atr,
         signal=signal,
@@ -849,6 +894,8 @@ def _portfolio_snapshot(portfolio_id: int, mode: str = "swing") -> dict:
             "ema200": q.ema200,
             "atr": q.atr,
             "atr_pct": q.atr_pct,
+            "rsi": q.rsi,
+            "rsi_label": q.rsi_label,
             "stop_loss": q.stop_loss,
             "stop_atr": q.stop_atr,
             "signal": q.signal,
@@ -1491,6 +1538,136 @@ def digest_send_now(pid: int):
                (datetime.now(timezone.utc).strftime("%Y-%m-%d"), pid))
     db.commit()
     return jsonify({"ok": True, "to": row["email"], "subject": subject})
+
+
+# ---------------------------------------------------------------------------
+# Market regime — Fear & Greed + BTC dominance (both free, no key)
+# ---------------------------------------------------------------------------
+
+_market_cache: dict[str, tuple[float, dict]] = {}
+_MARKET_TTL = 300  # 5 min
+
+
+@app.route("/api/market")
+def market():
+    """Returns market-wide gauges traders watch:
+    - Fear & Greed Index 0-100 (alternative.me)
+    - BTC dominance, ETH/BTC ratio, total mcap, 24h vol (CoinGecko global)
+
+    Cached 5 min server-side.  All free APIs, no key.
+    """
+    now = time.time()
+    cached = _market_cache.get("snapshot")
+    if cached and now - cached[0] < _MARKET_TTL:
+        return jsonify(cached[1])
+
+    out: dict = {"fetched_at": datetime.now(timezone.utc).isoformat()}
+
+    # Fear & Greed (alternative.me)
+    try:
+        url = "https://api.alternative.me/fng/?limit=2"
+        with urllib.request.urlopen(urllib.request.Request(url, headers={"User-Agent": "ChurnLence/1.0"}), timeout=6) as r:
+            payload = json.loads(r.read())
+        data = (payload.get("data") or [])
+        if data:
+            today = data[0]
+            yesterday = data[1] if len(data) > 1 else None
+            out["fear_greed"] = {
+                "value": int(today.get("value", 50)),
+                "label": today.get("value_classification", "Neutral"),
+                "yesterday": int(yesterday["value"]) if yesterday else None,
+                "delta": (int(today["value"]) - int(yesterday["value"])) if yesterday else 0,
+            }
+    except Exception as exc:
+        app.logger.warning("F&G fetch failed: %s", exc)
+        out["fear_greed"] = None
+
+    # CoinGecko /global
+    try:
+        url = "https://api.coingecko.com/api/v3/global"
+        with urllib.request.urlopen(urllib.request.Request(url, headers={"User-Agent": "ChurnLence/1.0"}), timeout=6) as r:
+            payload = json.loads(r.read())
+        d = payload.get("data") or {}
+        mcap = d.get("market_cap_percentage") or {}
+        total_mcap = (d.get("total_market_cap") or {}).get("usd")
+        total_vol  = (d.get("total_volume")     or {}).get("usd")
+        mcap_change = d.get("market_cap_change_percentage_24h_usd")
+        out["global"] = {
+            "btc_dominance":  round(mcap.get("btc", 0), 2),
+            "eth_dominance":  round(mcap.get("eth", 0), 2),
+            "total_mcap_usd": total_mcap,
+            "total_vol_usd":  total_vol,
+            "mcap_change_24h_pct": round(mcap_change, 2) if mcap_change is not None else None,
+            "active_cryptocurrencies": d.get("active_cryptocurrencies"),
+        }
+    except Exception as exc:
+        app.logger.warning("CoinGecko global fetch failed: %s", exc)
+        out["global"] = None
+
+    # Quick read for the UI banner
+    if out.get("fear_greed") and out.get("global"):
+        fg = out["fear_greed"]["value"]
+        btc_dom = out["global"]["btc_dominance"]
+        if fg < 25 and btc_dom > 55:
+            regime = "Risk off — capitulation"
+        elif fg < 25:
+            regime = "Fearful — possible bottom"
+        elif fg > 75 and btc_dom < 50:
+            regime = "Alt-season risk-on"
+        elif fg > 75:
+            regime = "Greedy — take profits"
+        elif btc_dom > 58:
+            regime = "BTC-dominant — alts struggle"
+        elif btc_dom < 48:
+            regime = "Alt momentum"
+        else:
+            regime = "Neutral"
+        out["regime"] = regime
+
+    _market_cache["snapshot"] = (now, out)
+    return jsonify(out)
+
+
+# ---------------------------------------------------------------------------
+# News headlines per coin — CryptoPanic free tier (no key required)
+# ---------------------------------------------------------------------------
+
+_news_cache: dict[str, tuple[float, list]] = {}
+_NEWS_TTL = 600  # 10 min
+
+
+@app.route("/api/news/<symbol>")
+def news(symbol: str):
+    """Top news for a coin.  Uses CryptoPanic's no-auth public endpoint
+    so we don't need a key.  Falls back gracefully when the API is down."""
+    sym = symbol.upper().replace("-USD", "").strip()
+    if not sym:
+        return jsonify([])
+    now = time.time()
+    cached = _news_cache.get(sym)
+    if cached and now - cached[0] < _NEWS_TTL:
+        return jsonify(cached[1])
+    try:
+        url = f"https://cryptopanic.com/api/free/v1/posts/?currencies={sym.lower()}&public=true"
+        req = urllib.request.Request(url, headers={"User-Agent": "ChurnLence/1.0"})
+        with urllib.request.urlopen(req, timeout=6) as r:
+            payload = json.loads(r.read())
+        items = []
+        for post in (payload.get("results") or [])[:10]:
+            items.append({
+                "title":     post.get("title") or "",
+                "url":       post.get("url") or "",
+                "source":    (post.get("source") or {}).get("title") or "",
+                "domain":    (post.get("source") or {}).get("domain") or "",
+                "published": post.get("published_at") or "",
+                "votes":     (post.get("votes") or {}),
+                "kind":      post.get("kind") or "news",
+            })
+        _news_cache[sym] = (now, items)
+        return jsonify(items)
+    except Exception as exc:
+        app.logger.warning("news fetch failed for %s: %s", sym, exc)
+        return jsonify(cached[1] if cached else [])
 
 
 # ---------------------------------------------------------------------------

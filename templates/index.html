@@ -113,6 +113,29 @@
   <main class="main">
     <!-- OVERVIEW TAB ------------------------------------------------------- -->
     <section class="panel active" data-panel="overview">
+      <article class="market-regime glass-card" id="market-regime" hidden>
+        <div class="mr-cell mr-fg" id="mr-fg">
+          <div class="mr-label">Fear &amp; Greed</div>
+          <div class="mr-value"><span id="mr-fg-num">—</span><span class="mr-fg-tag" id="mr-fg-label">—</span></div>
+          <div class="mr-sub" id="mr-fg-delta">—</div>
+        </div>
+        <div class="mr-cell">
+          <div class="mr-label">BTC Dominance</div>
+          <div class="mr-value" id="mr-btc-dom">—</div>
+          <div class="mr-sub" id="mr-eth-dom">—</div>
+        </div>
+        <div class="mr-cell">
+          <div class="mr-label">Total Market Cap</div>
+          <div class="mr-value" id="mr-mcap">—</div>
+          <div class="mr-sub" id="mr-mcap-chg">—</div>
+        </div>
+        <div class="mr-cell mr-regime">
+          <div class="mr-label">Regime read</div>
+          <div class="mr-value" id="mr-regime">—</div>
+          <div class="mr-sub">based on F&amp;G + BTC dominance</div>
+        </div>
+      </article>
+
       <div class="hero-grid">
         <article class="hero-card accent-cyan">
           <div class="hero-label">Portfolio value</div>
@@ -260,6 +283,13 @@
           <span><i class="dot dashed" style="background:#ff3d7f"></i>Stop-loss</span>
         </div>
       </div>
+      <article class="glass-card news-card" id="news-card" style="margin-top:14px;" hidden>
+        <header class="card-head">
+          <h2>Latest news</h2>
+          <span class="card-sub" id="news-symbol">—</span>
+        </header>
+        <ul class="news-list" id="news-list"></ul>
+      </article>
     </section>
 
     <!-- SIGNALS TAB -------------------------------------------------------- -->
