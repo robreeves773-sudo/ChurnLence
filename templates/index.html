@@ -222,6 +222,15 @@
           <ul class="risk-warnings" id="hhi-warnings"><li class="empty">No single-name risks detected.</li></ul>
         </div>
       </article>
+
+      <article class="glass-card" id="correlation-card" style="margin-top:18px;" hidden>
+        <header class="card-head">
+          <h2>Correlation</h2>
+          <span class="card-sub" id="corr-sub">Pearson over last 30 daily returns. Above 0.85 = same trade.</span>
+        </header>
+        <div id="corr-grid"></div>
+        <p class="overkill-tip" id="corr-warn" hidden></p>
+      </article>
     </section>
 
     <!-- HOLDINGS TAB ------------------------------------------------------- -->
@@ -515,6 +524,17 @@
           <p class="planner-note" id="planner-note"></p>
         </article>
       </div>
+
+      <article class="glass-card" id="kelly-card" style="margin-top:18px;">
+        <header class="card-head">
+          <h2>Kelly criterion sizing</h2>
+          <span class="card-sub">Based on your closed sells. Tells you the math-optimal bet size given your win-rate.</span>
+        </header>
+        <div id="kelly-body">
+          <p class="planner-note" style="color:var(--ink-mute)">Close at least 5 positions (use the Sell button on Holdings) and Kelly will compute here.</p>
+        </div>
+        <button type="button" class="ghost-btn" id="kelly-refresh-btn" style="margin-top:8px;">Recompute</button>
+      </article>
     </section>
   </main>
 
@@ -689,6 +709,23 @@ NVDA,15,120"></textarea>
           <button type="button" class="ghost-btn" id="digest-send-btn" title="Send the digest right now (requires SMTP)">Send now</button>
         </div>
         <div class="full" id="digest-preview-out" hidden style="background:rgba(0,0,0,0.25); padding:12px; border-radius:8px; max-height:240px; overflow:auto; font-family:'JetBrains Mono', monospace; font-size:12px; white-space:pre-wrap; color:var(--ink-dim);"></div>
+
+        <hr class="full" style="border:0; border-top:1px solid var(--line); margin:6px 0;"/>
+        <div class="full" style="color:var(--ink-mute); font-size:13px;">
+          <strong>Discord webhook</strong> — for memecoin trades where every second matters.
+          In your Discord server: <em>Channel settings → Integrations → Webhooks → New Webhook → Copy URL</em>.
+        </div>
+        <label class="full">Discord webhook URL
+          <input name="discord_webhook" type="url" placeholder="https://discord.com/api/webhooks/…" autocomplete="off" />
+        </label>
+        <label class="full" style="display:flex; flex-direction:row; align-items:center; gap:10px;">
+          <input name="discord_enabled" type="checkbox" style="width:auto;" />
+          <span>Send signal flips to Discord (in addition to / instead of email)</span>
+        </label>
+        <div class="form-actions" style="grid-column: span 1; justify-content: flex-start;">
+          <button type="button" class="ghost-btn" id="discord-test-btn" title="Send a test ping right now">Test ping</button>
+        </div>
+
         <div class="form-error" id="alerts-status"></div>
         <div class="form-actions">
           <button type="button" class="ghost-btn" data-close>Close</button>

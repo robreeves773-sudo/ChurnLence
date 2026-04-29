@@ -80,6 +80,11 @@ SMTP_USER = os.environ.get("SMTP_USER", "")
 SMTP_PASS = os.environ.get("SMTP_PASS", "")
 SMTP_FROM = os.environ.get("SMTP_FROM", SMTP_USER)
 
+# Optional: WhaleAlert API key for big on-chain transfer alerts.
+# Free tier exists at https://whale-alert.io/  — sign up, paste the key into
+# the env var, and the /api/whales endpoint starts returning real data.
+WHALEALERT_KEY = os.environ.get("WHALEALERT_API_KEY", "")
+
 # Curated symbol universe for autocomplete. Covers the usual asks from an
 # individual retail tracker: mega-caps, popular ETFs, and top crypto.
 SYMBOL_UNIVERSE: list[dict] = [
@@ -279,6 +284,8 @@ CREATE TABLE IF NOT EXISTS alert_prefs (
     daily_digest INTEGER NOT NULL DEFAULT 0,      -- one summary per day
     digest_hour_utc INTEGER NOT NULL DEFAULT 13,  -- 13:00 UTC = ~9am ET
     last_digest_date TEXT,                        -- YYYY-MM-DD; throttle to once per day
+    discord_webhook TEXT,                         -- POST signal flips here
+    discord_enabled INTEGER NOT NULL DEFAULT 0,
     updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
 );
 """
@@ -295,6 +302,8 @@ def _migrate(conn: sqlite3.Connection) -> None:
             ("daily_digest",     "INTEGER NOT NULL DEFAULT 0"),
             ("digest_hour_utc",  "INTEGER NOT NULL DEFAULT 13"),
             ("last_digest_date", "TEXT"),
+            ("discord_webhook",  "TEXT"),
+            ("discord_enabled",  "INTEGER NOT NULL DEFAULT 0"),
         ]:
             if col not in ap_cols:
                 conn.execute(f"ALTER TABLE alert_prefs ADD COLUMN {col} {ddl}")
@@ -360,6 +369,9 @@ class Quote:
     atr_pct: float | None         # ATR as % of price (volatility gauge)
     rsi: float | None             # 14-period RSI (>70 overbought, <30 oversold)
     rsi_label: str                # "overbought" | "oversold" | "neutral"
+    volume_24h: float | None      # last bar's volume (USD for crypto)
+    rvol: float | None            # relative volume vs 20-bar avg; >1.5 = above avg, >3 = unusual
+    rvol_label: str               # "low" | "normal" | "high" | "unusual"
     stop_loss: float | None       # Overkill MA-style: ~3% below EMA21
     stop_atr: float | None        # Volatility-aware: price - 2×ATR
     signal: str                   # BUY / SELL / HOLD
@@ -500,8 +512,8 @@ def _overkill_signal(
     return "HOLD", "Mixed EMAs — no clean setup"
 
 
-def _demo_history(symbol: str) -> tuple[list[str], list[float], list[float], list[float], str, str]:
-    """Deterministic synthetic OHLC history for offline/demo use."""
+def _demo_history(symbol: str) -> tuple[list[str], list[float], list[float], list[float], list[float], str, str]:
+    """Deterministic synthetic OHLC + volume history for offline/demo use."""
     seed = int(hashlib.sha256(symbol.encode()).hexdigest(), 16) % (2**32)
     rng = random.Random(seed)
     base = 50 + rng.random() * 900
@@ -509,8 +521,10 @@ def _demo_history(symbol: str) -> tuple[list[str], list[float], list[float], lis
     closes: list[float] = []
     highs: list[float] = []
     lows: list[float] = []
+    volumes: list[float] = []
     p = base
     drift = (rng.random() - 0.4) * 0.0008
+    base_vol = 1_000_000 + rng.random() * 50_000_000
     for _ in range(n):
         shock = rng.gauss(0, 0.018)
         p = max(1.0, p * (1 + drift + shock))
@@ -518,14 +532,16 @@ def _demo_history(symbol: str) -> tuple[list[str], list[float], list[float], lis
         intraday = abs(rng.gauss(0, 0.012)) + 0.004
         highs.append(p * (1 + intraday))
         lows.append(p * (1 - intraday))
+        # Volume scales with intraday range — bigger moves get bigger volume
+        volumes.append(base_vol * (1 + abs(shock) * 8) * (0.7 + rng.random() * 0.6))
     today = datetime.now(timezone.utc).date()
     dates = [(today - timedelta(days=n - 1 - i)).strftime("%Y-%m-%d") for i in range(n)]
     currency = "USD"
     name = f"{symbol} (demo)"
-    return dates, highs, lows, closes, currency, name
+    return dates, highs, lows, closes, volumes, currency, name
 
 
-def _coingecko_history(coin_id: str, days: int = 365) -> tuple[list[str], list[float], list[float], list[float], str, str] | None:
+def _coingecko_history(coin_id: str, days: int = 365) -> tuple[list[str], list[float], list[float], list[float], list[float], str, str] | None:
     """Pull candles from CoinGecko free tier (no key).
 
     /market_chart granularity is implicit:
@@ -566,6 +582,12 @@ def _coingecko_history(coin_id: str, days: int = 365) -> tuple[list[str], list[f
         seen_keys[d] = len(dates)
         dates.append(d)
         closes.append(float(px))
+    # Volumes — the same /market_chart payload returns total_volumes[ts, vol]
+    volume_by_date: dict[str, float] = {}
+    for ts_ms, vol in (payload.get("total_volumes") or []):
+        d = datetime.fromtimestamp(ts_ms / 1000, tz=timezone.utc).strftime(fmt)
+        volume_by_date[d] = float(vol)
+    volumes = [volume_by_date.get(d, 0.0) for d in dates]
     # Synthetic high/low band for ATR (kept tight so we don't fabricate volatility).
     highs = [c * 1.006 for c in closes]
     lows  = [c * 0.994 for c in closes]
@@ -583,7 +605,7 @@ def _coingecko_history(coin_id: str, days: int = 365) -> tuple[list[str], list[f
         name = meta.get("name") or name
     except Exception:
         pass
-    return dates, highs, lows, closes, "USD", name
+    return dates, highs, lows, closes, volumes, "USD", name
 
 
 def fetch_quote(symbol: str, force: bool = False, mode: str = "swing") -> Quote | None:
@@ -619,6 +641,8 @@ def fetch_quote(symbol: str, force: bool = False, mode: str = "swing") -> Quote 
     # yfinance period/interval per mode
     yf_period, yf_interval = ("1y", "1d") if mode == "swing" else ("5d", "15m")
 
+    volumes: list[float] = []
+
     if not DEMO_MODE:
         try:
             ticker = yf.Ticker(symbol)
@@ -627,6 +651,7 @@ def fetch_quote(symbol: str, force: bool = False, mode: str = "swing") -> Quote 
                 closes = [float(x) for x in hist["Close"].tolist()]
                 highs = [float(x) for x in hist["High"].tolist()]
                 lows = [float(x) for x in hist["Low"].tolist()]
+                volumes = [float(x) for x in hist.get("Volume", []).tolist()] if "Volume" in hist.columns else []
                 fmt = "%Y-%m-%d" if mode == "swing" else "%Y-%m-%d %H:%M"
                 dates = [d.strftime(fmt) for d in hist.index]
         except Exception as exc:
@@ -638,12 +663,12 @@ def fetch_quote(symbol: str, force: bool = False, mode: str = "swing") -> Quote 
         if cg_id:
             cg = _coingecko_history(cg_id, days=(1 if mode == "day" else 365))
             if cg:
-                dates, highs, lows, closes, currency, name = cg
+                dates, highs, lows, closes, volumes, currency, name = cg
                 used_coingecko = True
 
     if not closes:
         if DEMO_MODE:
-            dates, highs, lows, closes, currency, name = _demo_history(symbol)
+            dates, highs, lows, closes, volumes, currency, name = _demo_history(symbol)
         else:
             return None
 
@@ -695,6 +720,27 @@ def fetch_quote(symbol: str, force: bool = False, mode: str = "swing") -> Quote 
         rsi_label = "oversold"
     else:
         rsi_label = "neutral"
+    # Relative volume: last bar's volume vs 20-bar average.
+    # >1.5 = above average, >3 = unusual buying.  Falls back to 1.0 if we
+    # don't have at least 20 bars of clean data.
+    last_volume = volumes[-1] if volumes else None
+    rvol = None
+    rvol_label = "normal"
+    if volumes and len(volumes) >= 21:
+        prior20 = volumes[-21:-1]
+        prior_clean = [v for v in prior20 if v and v > 0]
+        if prior_clean:
+            avg20 = sum(prior_clean) / len(prior_clean)
+            if avg20 > 0 and last_volume:
+                rvol = round(last_volume / avg20, 2)
+                if rvol >= 3:
+                    rvol_label = "unusual"
+                elif rvol >= 1.5:
+                    rvol_label = "high"
+                elif rvol <= 0.5:
+                    rvol_label = "low"
+                else:
+                    rvol_label = "normal"
     # Tighter stops in day mode: 1% under EMA21 and 1×ATR (vs 3% / 2×ATR swing).
     if mode == "day":
         stop_ma  = round(e21 * 0.99, 6) if e21 else None
@@ -733,6 +779,9 @@ def fetch_quote(symbol: str, force: bool = False, mode: str = "swing") -> Quote 
         atr_pct=round(atr_pct, 3) if atr_pct else None,
         rsi=round(rsi_last, 1) if rsi_last is not None else None,
         rsi_label=rsi_label,
+        volume_24h=round(last_volume, 2) if last_volume else None,
+        rvol=rvol,
+        rvol_label=rvol_label,
         stop_loss=stop_ma,
         stop_atr=stop_atr,
         signal=signal,
@@ -838,7 +887,92 @@ def _position_size(symbol: str, account: float, risk_pct: float,
         "exceeds_account": position_value > account,
         "signal": q.signal,
         "signal_reason": q.signal_reason,
+        "rsi": q.rsi,
+        "rsi_label": q.rsi_label,
+        "rvol": q.rvol,
+        "rvol_label": q.rvol_label,
     }
+
+
+def _kelly_size(win_rate: float, avg_win_pct: float, avg_loss_pct: float,
+                account: float, fraction: float = 0.5) -> dict:
+    """Kelly criterion: f* = w - (1-w)/R where R = avg_win / avg_loss.
+
+    win_rate     ∈ [0, 1]
+    avg_win_pct  > 0 (e.g. 0.15 for 15%)
+    avg_loss_pct > 0 (always entered as positive — function flips sign)
+    fraction     "Kelly fraction" — full Kelly is too aggressive for most.
+                 Default 0.5 = "half-Kelly", widely used in practice.
+
+    Returns the % of account to bet per trade and the dollar amount.
+    """
+    if avg_loss_pct <= 0:
+        return {"error": "avg_loss_pct must be > 0"}
+    R = avg_win_pct / avg_loss_pct
+    f_star = win_rate - (1 - win_rate) / R
+    f_used = max(0.0, f_star * fraction)
+    return {
+        "win_rate":      round(win_rate * 100, 2),
+        "avg_win_pct":   round(avg_win_pct * 100, 2),
+        "avg_loss_pct":  round(avg_loss_pct * 100, 2),
+        "payoff_ratio":  round(R, 3),
+        "kelly_full":    round(f_star * 100, 2),
+        "kelly_used":    round(f_used * 100, 2),
+        "fraction":      fraction,
+        "bet_dollars":   round(f_used * account, 2),
+        "warning":       (
+            "Kelly is negative — your strategy has no edge over this window. "
+            "Don't trade." if f_star <= 0 else
+            "Full Kelly is dangerously volatile. Use half-Kelly (default) "
+            "or quarter-Kelly until you trust the win-rate." if fraction == 1 else
+            None
+        ),
+    }
+
+
+@app.route("/api/portfolios/<int:pid>/kelly")
+def kelly_route(pid: int):
+    """Compute Kelly bet sizing using the user's recent realized trades.
+
+    Falls back to backtest stats on a chosen symbol when there aren't enough
+    closed trades yet."""
+    try:
+        account = float(request.args.get("account") or 10000)
+        fraction = float(request.args.get("fraction") or 0.5)
+    except ValueError:
+        return jsonify({"error": "invalid numeric input"}), 400
+    fraction = max(0.1, min(fraction, 1.0))
+    db = get_db()
+    txs = db.execute(
+        "SELECT shares, sell_price, cost_basis, realized_pl FROM transactions "
+        "WHERE portfolio_id = ? ORDER BY sold_at DESC LIMIT 50",
+        (pid,),
+    ).fetchall()
+    if len(txs) < 5:
+        return jsonify({
+            "error": "need at least 5 realized sells to estimate win-rate. "
+                     "Use the backtest tab on a single symbol instead.",
+            "trades_available": len(txs),
+        }), 400
+    wins, losses = [], []
+    for t in txs:
+        cost = float(t["cost_basis"])
+        sell = float(t["sell_price"])
+        if cost <= 0:
+            continue
+        ret = (sell - cost) / cost
+        if ret > 0:
+            wins.append(ret)
+        else:
+            losses.append(-ret)
+    if not wins or not losses:
+        return jsonify({"error": "need both winning and losing trades to compute Kelly"}), 400
+    win_rate = len(wins) / (len(wins) + len(losses))
+    avg_win = sum(wins) / len(wins)
+    avg_loss = sum(losses) / len(losses)
+    out = _kelly_size(win_rate, avg_win, avg_loss, account, fraction)
+    out["sample"] = {"wins": len(wins), "losses": len(losses), "trades": len(wins) + len(losses)}
+    return jsonify(out)
 
 
 def _portfolio_snapshot(portfolio_id: int, mode: str = "swing") -> dict:
@@ -896,6 +1030,9 @@ def _portfolio_snapshot(portfolio_id: int, mode: str = "swing") -> dict:
             "atr_pct": q.atr_pct,
             "rsi": q.rsi,
             "rsi_label": q.rsi_label,
+            "volume_24h": q.volume_24h,
+            "rvol": q.rvol,
+            "rvol_label": q.rvol_label,
             "stop_loss": q.stop_loss,
             "stop_atr": q.stop_atr,
             "signal": q.signal,
@@ -1201,6 +1338,88 @@ def sell_shares(pid: int):
     })
 
 
+@app.route("/api/portfolios/<int:pid>/correlation")
+def correlation(pid: int):
+    """Pearson correlation of daily returns over the last N bars between every
+    pair of holdings. >0.85 = basically the same trade. <0 = hedge.
+
+    Useful for diversification: if your top 5 are all >0.9 correlated you don't
+    have 5 positions, you have 1 position with 5x the risk.
+    """
+    try:
+        n = int(request.args.get("bars") or 30)
+    except ValueError:
+        n = 30
+    n = max(7, min(n, 180))
+    db = get_db()
+    rows = db.execute(
+        "SELECT DISTINCT symbol FROM holdings WHERE portfolio_id = ? ORDER BY symbol",
+        (pid,),
+    ).fetchall()
+    symbols = [r["symbol"] for r in rows]
+    if len(symbols) < 2:
+        return jsonify({"symbols": symbols, "matrix": [], "bars": n,
+                        "note": "need at least 2 holdings to compute correlation"})
+
+    # Pull recent closes for each symbol
+    series: dict[str, list[float]] = {}
+    for sym in symbols:
+        q = fetch_quote(sym)
+        if not q or not q.history or len(q.history) < n + 1:
+            continue
+        last_n_plus_1 = q.history[-(n + 1):]
+        series[sym] = [bar["close"] for bar in last_n_plus_1]
+
+    valid = [s for s in symbols if s in series]
+    # Daily returns
+    returns: dict[str, list[float]] = {}
+    for sym, closes in series.items():
+        rets = []
+        for i in range(1, len(closes)):
+            prev = closes[i - 1]
+            rets.append((closes[i] - prev) / prev if prev else 0.0)
+        returns[sym] = rets
+
+    def _corr(a: list[float], b: list[float]) -> float:
+        n_pts = min(len(a), len(b))
+        if n_pts < 3:
+            return 0.0
+        a, b = a[-n_pts:], b[-n_pts:]
+        ma, mb = sum(a) / n_pts, sum(b) / n_pts
+        num = sum((a[i] - ma) * (b[i] - mb) for i in range(n_pts))
+        da  = math.sqrt(sum((a[i] - ma) ** 2 for i in range(n_pts)))
+        db_ = math.sqrt(sum((b[i] - mb) ** 2 for i in range(n_pts)))
+        return (num / (da * db_)) if (da and db_) else 0.0
+
+    matrix: list[list[float]] = []
+    for s1 in valid:
+        row = []
+        for s2 in valid:
+            if s1 == s2:
+                row.append(1.0)
+            else:
+                row.append(round(_corr(returns[s1], returns[s2]), 3))
+        matrix.append(row)
+
+    # Find the most-correlated pair (warn the user)
+    worst_pair = None
+    max_corr = -2.0
+    for i in range(len(valid)):
+        for j in range(i + 1, len(valid)):
+            c = matrix[i][j]
+            if c > max_corr:
+                max_corr = c
+                worst_pair = (valid[i], valid[j], c)
+
+    return jsonify({
+        "symbols": valid,
+        "matrix": matrix,
+        "bars": n,
+        "highest_pair": {"a": worst_pair[0], "b": worst_pair[1],
+                         "corr": worst_pair[2]} if worst_pair else None,
+    })
+
+
 @app.route("/api/portfolios/<int:pid>/transactions")
 def list_transactions(pid: int):
     db = get_db()
@@ -1410,17 +1629,27 @@ def alert_prefs(pid: int):
         except (TypeError, ValueError):
             hour = 13
         hour = max(0, min(23, hour))
+        webhook = (data.get("discord_webhook") or "").strip() or None
+        if webhook and not webhook.startswith("https://discord.com/api/webhooks/") \
+                and not webhook.startswith("https://discordapp.com/api/webhooks/"):
+            return jsonify({"error": "discord_webhook must be a discord.com webhook URL"}), 400
+        discord_enabled = 1 if data.get("discord_enabled") else 0
         db.execute(
-            "INSERT INTO alert_prefs(portfolio_id, email, enabled, daily_digest, digest_hour_utc, updated_at) "
-            "VALUES (?, ?, ?, ?, ?, CURRENT_TIMESTAMP) "
+            "INSERT INTO alert_prefs(portfolio_id, email, enabled, daily_digest, digest_hour_utc, "
+            "discord_webhook, discord_enabled, updated_at) "
+            "VALUES (?, ?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP) "
             "ON CONFLICT(portfolio_id) DO UPDATE SET email = excluded.email, "
             "enabled = excluded.enabled, daily_digest = excluded.daily_digest, "
-            "digest_hour_utc = excluded.digest_hour_utc, updated_at = CURRENT_TIMESTAMP",
-            (pid, email, enabled, daily, hour),
+            "digest_hour_utc = excluded.digest_hour_utc, "
+            "discord_webhook = excluded.discord_webhook, "
+            "discord_enabled = excluded.discord_enabled, "
+            "updated_at = CURRENT_TIMESTAMP",
+            (pid, email, enabled, daily, hour, webhook, discord_enabled),
         )
         db.commit()
     row = db.execute(
-        "SELECT email, enabled, daily_digest, digest_hour_utc, last_digest_date, updated_at "
+        "SELECT email, enabled, daily_digest, digest_hour_utc, last_digest_date, "
+        "discord_webhook, discord_enabled, updated_at "
         "FROM alert_prefs WHERE portfolio_id = ?",
         (pid,),
     ).fetchone()
@@ -1430,9 +1659,25 @@ def alert_prefs(pid: int):
         "daily_digest":     bool(row["daily_digest"]) if row else False,
         "digest_hour_utc":  int(row["digest_hour_utc"]) if row else 13,
         "last_digest_date": row["last_digest_date"] if row else None,
+        "discord_webhook":  row["discord_webhook"] if row else None,
+        "discord_enabled":  bool(row["discord_enabled"]) if row else False,
         "updated_at":       row["updated_at"] if row else None,
         "smtp_configured":  bool(SMTP_HOST and SMTP_USER and SMTP_PASS),
     })
+
+
+@app.route("/api/portfolios/<int:pid>/discord/test", methods=["POST"])
+def discord_test(pid: int):
+    """Fire a test message to the saved Discord webhook so the user knows it works."""
+    db = get_db()
+    row = db.execute(
+        "SELECT discord_webhook FROM alert_prefs WHERE portfolio_id = ?", (pid,),
+    ).fetchone()
+    if not row or not row["discord_webhook"]:
+        return jsonify({"error": "no Discord webhook saved for this portfolio"}), 400
+    _send_discord_alert(row["discord_webhook"], "TEST", "—", "BUY",
+                        0.0, "ChurnLence test ping — alerts are working.")
+    return jsonify({"ok": True})
 
 
 def _build_digest(pid: int) -> dict:
@@ -1671,6 +1916,71 @@ def news(symbol: str):
 
 
 # ---------------------------------------------------------------------------
+# WhaleAlert — large on-chain transfers (opt-in, requires API key)
+# ---------------------------------------------------------------------------
+
+_whale_cache: dict[str, tuple[float, list]] = {}
+_WHALE_TTL = 90  # seconds
+
+
+@app.route("/api/whales")
+def whales():
+    """Recent large transactions from WhaleAlert.  Optional — returns an empty
+    list with a hint if WHALEALERT_API_KEY isn't set.
+
+    ?min_value=<usd>   default 1_000_000
+    ?currency=<sym>    e.g. 'btc', 'eth', 'sol' (lowercased symbol)
+    """
+    if not WHALEALERT_KEY:
+        return jsonify({
+            "configured": False,
+            "transactions": [],
+            "hint": "Set the WHALEALERT_API_KEY environment variable to enable whale alerts. "
+                    "Free key: https://whale-alert.io/ (signup required).",
+        })
+    try:
+        min_value = int(request.args.get("min_value") or 1_000_000)
+    except ValueError:
+        min_value = 1_000_000
+    currency = (request.args.get("currency") or "").lower().strip()
+    cache_key = f"{currency}:{min_value}"
+    now = time.time()
+    cached = _whale_cache.get(cache_key)
+    if cached and now - cached[0] < _WHALE_TTL:
+        return jsonify({"configured": True, "transactions": cached[1]})
+
+    start = int(now) - 60 * 30  # last 30 minutes
+    url = f"https://api.whale-alert.io/v1/transactions?api_key={WHALEALERT_KEY}&min_value={min_value}&start={start}"
+    if currency:
+        url += f"&currency={currency}"
+    try:
+        with urllib.request.urlopen(urllib.request.Request(url, headers={"User-Agent": "ChurnLence/1.0"}), timeout=8) as r:
+            payload = json.loads(r.read())
+    except Exception as exc:
+        app.logger.warning("WhaleAlert fetch failed: %s", exc)
+        return jsonify({"configured": True, "transactions": cached[1] if cached else [], "error": str(exc)})
+
+    txs = payload.get("transactions") or []
+    out = []
+    for t in txs[:30]:
+        out.append({
+            "timestamp": t.get("timestamp"),
+            "blockchain": t.get("blockchain"),
+            "symbol":    (t.get("symbol") or "").upper(),
+            "amount":    t.get("amount"),
+            "amount_usd": t.get("amount_usd"),
+            "from":      (t.get("from") or {}).get("owner_type", "unknown"),
+            "from_owner": (t.get("from") or {}).get("owner") or "",
+            "to":        (t.get("to") or {}).get("owner_type", "unknown"),
+            "to_owner":  (t.get("to") or {}).get("owner") or "",
+            "transaction_type": t.get("transaction_type") or "transfer",
+            "hash":      t.get("hash"),
+        })
+    _whale_cache[cache_key] = (now, out)
+    return jsonify({"configured": True, "transactions": out})
+
+
+# ---------------------------------------------------------------------------
 # Memecoin scanner — GeckoTerminal trending / new pools (free, no API key)
 # ---------------------------------------------------------------------------
 
@@ -1818,6 +2128,42 @@ def list_signal_events(pid: int):
 _last_signals: dict[tuple[int, str], str] = {}
 
 
+def _send_discord_alert(webhook: str, symbol: str, from_sig: str | None, to_sig: str,
+                        price: float, reason: str) -> None:
+    """Post a single signal-flip event to a Discord webhook URL.
+
+    Uses Discord's embed format so the message is visually rich (colored bar,
+    title, fields).  Color = green for BUY, red for SELL, grey for HOLD.
+    """
+    if not webhook or not webhook.startswith("https://"):
+        return
+    color = 0x00FF9C if to_sig == "BUY" else 0xFF5577 if to_sig == "SELL" else 0x808080
+    payload = {
+        "username": "ChurnLence",
+        "embeds": [{
+            "title": f"{symbol}  →  {to_sig}",
+            "description": reason or "",
+            "color": color,
+            "fields": [
+                {"name": "From",  "value": from_sig or "—", "inline": True},
+                {"name": "To",    "value": to_sig,          "inline": True},
+                {"name": "Price", "value": f"${price:,.6g}", "inline": True},
+            ],
+            "footer": {"text": "ChurnLence · Overkill EMA signal"},
+            "timestamp": datetime.now(timezone.utc).isoformat(),
+        }],
+    }
+    try:
+        body = json.dumps(payload).encode()
+        req = urllib.request.Request(webhook, data=body, method="POST",
+                                     headers={"Content-Type": "application/json",
+                                              "User-Agent": "ChurnLence/1.0"})
+        with urllib.request.urlopen(req, timeout=8) as resp:
+            resp.read()  # discard
+    except Exception as exc:
+        app.logger.warning("discord webhook send failed: %s", exc)
+
+
 def _send_alert_email(to: str, symbol: str, from_sig: str | None, to_sig: str,
                       price: float, reason: str) -> None:
     if not (SMTP_HOST and SMTP_USER and SMTP_PASS and to):
@@ -1849,7 +2195,8 @@ def _signal_watcher_loop():
             with direct_db() as db:
                 portfolios = db.execute(
                     "SELECT p.id, p.name, ap.email, ap.enabled, ap.daily_digest, "
-                    "ap.digest_hour_utc, ap.last_digest_date "
+                    "ap.digest_hour_utc, ap.last_digest_date, "
+                    "ap.discord_webhook, ap.discord_enabled "
                     "FROM portfolios p "
                     "LEFT JOIN alert_prefs ap ON ap.portfolio_id = p.id"
                 ).fetchall()
@@ -1883,6 +2230,9 @@ def _signal_watcher_loop():
                         if p["enabled"] and p["email"]:
                             _send_alert_email(p["email"], sym, prev, q.signal,
                                               q.price, q.signal_reason)
+                        if p["discord_enabled"] and p["discord_webhook"]:
+                            _send_discord_alert(p["discord_webhook"], sym, prev, q.signal,
+                                                q.price, q.signal_reason)
                         _last_signals[key] = q.signal
 
                     # --- daily digest (fire once per UTC day at the chosen hour) ---

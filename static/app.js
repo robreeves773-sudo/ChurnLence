@@ -128,6 +128,7 @@
     moveTabUnderline();
     if (name === 'charts')  renderDetailChart();
     if (name === 'scanner') refreshScanner();   // auto-load on first visit
+    if (name === 'planner') refreshKelly();     // auto-recompute on tab open
   }
   function moveTabUnderline() {
     const active = $('.tab.active');
@@ -782,6 +783,79 @@
     }).join('');
   }
 
+  // ---------- Kelly criterion (Planner tab) --------------------------------
+  async function refreshKelly() {
+    const body = $('#kelly-body');
+    if (!body || !state.currentPortfolioId) return;
+    const pf = $('#planner-form');
+    const account = pf ? parseFloat(pf.elements.account.value) || 10000 : 10000;
+    body.innerHTML = '<p class="planner-note" style="color:var(--ink-mute)">Computing…</p>';
+    try {
+      const r = await api(`/api/portfolios/${state.currentPortfolioId}/kelly?account=${account}&fraction=0.5`);
+      if (r.error) {
+        body.innerHTML = `<p class="planner-note" style="color:var(--ink-mute)">${escapeHtml(r.error)}</p>`;
+        return;
+      }
+      const fullColor = r.kelly_full > 0 ? 'up' : 'down';
+      body.innerHTML = `
+        <div class="planner-numbers">
+          <div><span class="n-lbl">Win rate</span><span class="n-val">${r.win_rate.toFixed(1)}%</span></div>
+          <div><span class="n-lbl">Avg win</span><span class="n-val up">+${r.avg_win_pct.toFixed(2)}%</span></div>
+          <div><span class="n-lbl">Avg loss</span><span class="n-val down">−${r.avg_loss_pct.toFixed(2)}%</span></div>
+          <div><span class="n-lbl">Payoff R</span><span class="n-val">${r.payoff_ratio.toFixed(2)}</span></div>
+          <div><span class="n-lbl">Full Kelly</span><span class="n-val ${fullColor}">${r.kelly_full.toFixed(2)}%</span></div>
+          <div><span class="n-lbl">½-Kelly bet</span><span class="n-val">${r.kelly_used.toFixed(2)}% · ${fmtMoney(r.bet_dollars)}</span></div>
+          <div><span class="n-lbl">Sample</span><span class="n-val">${r.sample.trades} trades (${r.sample.wins}W / ${r.sample.losses}L)</span></div>
+        </div>
+        ${r.warning ? `<p class="planner-note warn" style="color:var(--amber, #ffb84d); margin-top:10px;">⚠ ${escapeHtml(r.warning)}</p>` : ''}
+      `;
+    } catch (err) {
+      body.innerHTML = `<p class="planner-note" style="color:var(--danger)">${escapeHtml(err.message)}</p>`;
+    }
+  }
+
+  // ---------- Correlation heatmap ------------------------------------------
+  async function refreshCorrelation() {
+    const card = $('#correlation-card');
+    if (!card) return;
+    if (!state.currentPortfolioId) { card.hidden = true; return; }
+    try {
+      const r = await api(`/api/portfolios/${state.currentPortfolioId}/correlation`);
+      const syms = r.symbols || [];
+      if (syms.length < 2) { card.hidden = true; return; }
+      card.hidden = false;
+      const grid = $('#corr-grid');
+      grid.style.gridTemplateColumns = `120px repeat(${syms.length}, 1fr)`;
+      const cells = ['<div class="corr-cell corr-header"></div>'];
+      for (const s of syms) cells.push(`<div class="corr-cell corr-header">${escapeHtml(s)}</div>`);
+      for (let i = 0; i < syms.length; i++) {
+        cells.push(`<div class="corr-cell corr-row-header">${escapeHtml(syms[i])}</div>`);
+        for (let j = 0; j < syms.length; j++) {
+          const v = r.matrix[i][j];
+          let cls = 'corr-zero';
+          if (i === j) cls = 'corr-self';
+          else if (v >= 0.7) cls = 'corr-pos-3';
+          else if (v >= 0.4) cls = 'corr-pos-2';
+          else if (v >= 0.15) cls = 'corr-pos-1';
+          else if (v <= -0.5) cls = 'corr-neg-3';
+          else if (v <= -0.25) cls = 'corr-neg-2';
+          else if (v <= -0.1) cls = 'corr-neg-1';
+          cells.push(`<div class="corr-cell ${cls}" title="${syms[i]} vs ${syms[j]}: ${v.toFixed(3)}">${v.toFixed(2)}</div>`);
+        }
+      }
+      grid.innerHTML = cells.join('');
+      const warn = $('#corr-warn');
+      if (r.highest_pair && r.highest_pair.corr > 0.85) {
+        warn.hidden = false;
+        warn.innerHTML = `⚠ <strong>${r.highest_pair.a}</strong> and <strong>${r.highest_pair.b}</strong> are ${(r.highest_pair.corr * 100).toFixed(0)}% correlated — they're basically the same trade. Consider trimming one.`;
+      } else {
+        warn.hidden = true;
+      }
+    } catch (err) {
+      card.hidden = true;
+    }
+  }
+
   // ---------- Today's actions card -----------------------------------------
   function renderTodaysActions(snap) {
     const wrap = $('#actions-wrap');
@@ -812,11 +886,14 @@
       const rsi = r.rsi != null
         ? `<span class="rsi-chip ${r.rsi_label || 'neutral'}" title="14-period RSI — ${r.rsi_label}">RSI ${r.rsi.toFixed(0)}</span>`
         : '';
+      const rvol = r.rvol != null
+        ? `<span class="rvol-chip ${r.rvol_label || 'normal'}" title="Volume vs 20-bar avg — ${r.rvol_label}">VOL ${r.rvol.toFixed(1)}×</span>`
+        : '';
       return `
         <div class="action-row" data-sym="${r.symbol}">
           <span class="sig-chip ${r.signal.toLowerCase()}">${r.signal}</span>
           <div class="action-main">
-            <div class="action-sym">${r.symbol} ${tag} ${rsi}</div>
+            <div class="action-sym">${r.symbol} ${tag} ${rsi} ${rvol}</div>
             <div class="action-reason">${escapeHtml(r.signal_reason || '')}</div>
           </div>
           <div class="action-px">
@@ -1689,6 +1766,8 @@
         f.elements.enabled.checked = !!p.enabled;
         f.elements.daily_digest.checked = !!p.daily_digest;
         f.elements.digest_hour_utc.value = String(p.digest_hour_utc ?? 13);
+        if (f.elements.discord_webhook) f.elements.discord_webhook.value = p.discord_webhook || '';
+        if (f.elements.discord_enabled) f.elements.discord_enabled.checked = !!p.discord_enabled;
         const status = $('#alerts-status');
         status.style.color = '';
         const lines = [];
@@ -1713,6 +1792,8 @@
         enabled: f.enabled.checked,
         daily_digest: f.daily_digest.checked,
         digest_hour_utc: parseInt(f.digest_hour_utc.value, 10),
+        discord_webhook: f.discord_webhook ? f.discord_webhook.value.trim() : '',
+        discord_enabled: f.discord_enabled ? f.discord_enabled.checked : false,
       };
       try {
         await api(`/api/portfolios/${state.currentPortfolioId}/alerts`,
@@ -1752,6 +1833,28 @@
           { method: 'POST' });
         toast(`Digest emailed to ${r.to}`, 'success', 5000);
       } catch (ex) { toast(ex.message, 'error', 5000); }
+    });
+
+    $('#kelly-refresh-btn')?.addEventListener('click', refreshKelly);
+
+    $('#discord-test-btn')?.addEventListener('click', async () => {
+      // Save the webhook + enable flag first so the test hits the URL the user just typed.
+      const f = $('#alerts-form').elements;
+      try {
+        await api(`/api/portfolios/${state.currentPortfolioId}/alerts`, {
+          method: 'POST',
+          body: JSON.stringify({
+            email: f.email.value.trim(),
+            enabled: f.enabled.checked,
+            daily_digest: f.daily_digest.checked,
+            digest_hour_utc: parseInt(f.digest_hour_utc.value, 10),
+            discord_webhook: f.discord_webhook.value.trim(),
+            discord_enabled: f.discord_enabled.checked,
+          }),
+        });
+        await api(`/api/portfolios/${state.currentPortfolioId}/discord/test`, { method: 'POST' });
+        toast('Discord test ping sent', 'success');
+      } catch (ex) { toast(ex.message, 'error'); }
     });
 
     // ----- backtest -----
@@ -1949,10 +2052,12 @@
       refreshWatchlist();
       refreshTransactions();
       refreshMarket();
+      refreshCorrelation();
       applyLaunchTab();
       setInterval(refreshWatchlist, 30000);   // watchlist refreshes every 30s
       setInterval(refreshTransactions, 60000); // transactions every minute
       setInterval(refreshMarket, 5 * 60 * 1000); // market regime every 5 min
+      setInterval(refreshCorrelation, 5 * 60 * 1000);
       setTimeout(moveTabUnderline, 50);
     } catch (err) {
       toast(`Boot failed: ${err.message}`, 'error');

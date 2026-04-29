@@ -711,6 +711,18 @@ select:focus, input:focus {
 .rsi-chip.oversold   { background: rgba(0,255,156,0.15); color: var(--lime); }
 .rsi-chip.neutral    { background: rgba(255,255,255,0.04); color: var(--ink-dim); }
 
+/* Relative-volume chip — same shape as RSI, different palette so they don't blur together */
+.rvol-chip {
+  font-family: 'JetBrains Mono', monospace;
+  font-size: 11px; font-weight: 600;
+  padding: 2px 7px; border-radius: 4px;
+  letter-spacing: 0.04em;
+}
+.rvol-chip.unusual { background: rgba(0,229,255,0.18); color: var(--cyan); }
+.rvol-chip.high    { background: rgba(179,136,255,0.18); color: var(--violet); }
+.rvol-chip.normal  { background: rgba(255,255,255,0.04); color: var(--ink-dim); }
+.rvol-chip.low     { background: rgba(90,99,120,0.2); color: var(--ink-mute); }
+
 /* News list (Charts tab) */
 .news-card .card-head { display: flex; justify-content: space-between; align-items: baseline; margin-bottom: 12px; }
 .news-list { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 10px; }
@@ -745,6 +757,26 @@ select:focus, input:focus {
   border-radius: 4px;
 }
 .scanner-warn strong { color: var(--amber); }
+
+/* Correlation heatmap (Overview) */
+#corr-grid { display: grid; gap: 2px; overflow-x: auto; }
+.corr-cell {
+  font-family: 'JetBrains Mono', monospace;
+  font-size: 11px; padding: 8px 6px; text-align: center;
+  border-radius: 4px;
+  min-width: 56px;
+}
+.corr-header { font-weight: 700; background: transparent; color: var(--ink-mute); font-size: 10px; letter-spacing: 0.06em; }
+.corr-row-header { font-weight: 700; text-align: right; padding-right: 12px; color: var(--ink); background: transparent; }
+/* Cell colour scales by correlation value (-1 .. +1).  >0.7 deep magenta, ~0 grey, <-0.5 cyan. */
+.corr-pos-3 { background: rgba(255,61,127,0.55); color: #fff; }
+.corr-pos-2 { background: rgba(255,61,127,0.35); color: #fff; }
+.corr-pos-1 { background: rgba(255,61,127,0.18); color: var(--ink); }
+.corr-zero  { background: rgba(255,255,255,0.05); color: var(--ink-dim); }
+.corr-neg-1 { background: rgba(0,229,255,0.18);  color: var(--ink); }
+.corr-neg-2 { background: rgba(0,229,255,0.35);  color: #fff; }
+.corr-neg-3 { background: rgba(0,229,255,0.55);  color: #fff; }
+.corr-self  { background: rgba(255,255,255,0.12); color: var(--ink); font-weight: 700; }
 
 /* Today's actions card */
 .actions-card .actions-wrap { display: flex; flex-direction: column; gap: 8px; }
