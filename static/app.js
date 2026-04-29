@@ -225,20 +225,58 @@
     pill.querySelector('.live-label').textContent = on ? 'LIVE' : 'OFFLINE';
   }
 
-  // ---------- snapshot handling ---------------------------------------------
+  // ---------- snapshot handling --------------------------------------------
+  // Per-renderer fingerprints so we skip DOM work when the inputs haven't
+  // actually changed.  Cheaper than diffing the whole DOM tree.
+  const renderHashes = {};
+  function shouldRender(key, hash) {
+    if (renderHashes[key] === hash) return false;
+    renderHashes[key] = hash;
+    return true;
+  }
+  function fingerprintRows(rows) {
+    // Symbol|price|signal|shares — anything that changes the visible row
+    return (rows || []).map(r =>
+      `${r.symbol}|${(r.price || 0).toFixed(6)}|${r.signal}|${r.shares}`).join('~');
+  }
+
   function applySnapshot(snap) {
     if (snap.error) { toast(snap.error, 'error'); return; }
+    const prevSnap = state.snapshot;
     state.snapshot = snap;
     detectSignalTransitions(snap.rows || []);
-    safeCall('overview', () => renderOverview(snap));
-    safeCall('actions', () => renderTodaysActions(snap));
-    safeCall('holdings', () => renderHoldings(snap));
-    safeCall('signals', () => renderSignalBars(snap));
-    safeCall('allocation', () => renderAllocation(snap));
-    safeCall('concentration', () => renderConcentration(snap));
-    safeCall('ticker', () => renderTickerTape(snap));
-    safeCall('chart-selector', () => updateChartSymbolSelector(snap));
-    if (state.chartSymbol && $('.panel.active')?.dataset.panel === 'charts') renderDetailChart();
+
+    const rowsHash = fingerprintRows(snap.rows);
+    const totalsHash = JSON.stringify(snap.totals || {});
+    const concHash  = JSON.stringify(snap.concentration || {});
+
+    if (shouldRender('overview', totalsHash + '|' + rowsHash))
+      safeCall('overview', () => renderOverview(snap));
+    if (shouldRender('actions', rowsHash))
+      safeCall('actions', () => renderTodaysActions(snap));
+    if (shouldRender('holdings', rowsHash))
+      safeCall('holdings', () => renderHoldings(snap));
+    if (shouldRender('signal-bars', rowsHash))
+      safeCall('signals', () => renderSignalBars(snap));
+    if (shouldRender('allocation', rowsHash))
+      safeCall('allocation', () => renderAllocation(snap));
+    if (shouldRender('concentration', concHash))
+      safeCall('concentration', () => renderConcentration(snap));
+    if (shouldRender('ticker', rowsHash))
+      safeCall('ticker', () => renderTickerTape(snap));
+    if (shouldRender('chart-selector', (snap.rows || []).map(r => r.symbol).join(',')))
+      safeCall('chart-selector', () => updateChartSymbolSelector(snap));
+
+    // Charts tab is only re-fetched when it's actually visible.
+    if (state.chartSymbol && $('.panel.active')?.dataset.panel === 'charts') {
+      // Throttle to avoid stomping the SSE-driven price flash; renderDetailChart
+      // itself is fetch-async so it's fine to call frequently, but we cap to 2s.
+      const now = Date.now();
+      if (!state._lastChartRender || now - state._lastChartRender > 2000) {
+        state._lastChartRender = now;
+        renderDetailChart();
+      }
+    }
   }
 
   function detectSignalTransitions(rows) {
@@ -298,6 +336,22 @@
     $('#hero-updated').textContent = `Updated ${d.toLocaleTimeString()}`;
   }
 
+  function _flashChangedPrices(rows, tbody) {
+    for (const r of rows) {
+      const prev = state.prevPrices[r.symbol];
+      const tr = tbody.querySelector(`tr[data-sym="${r.symbol}"]`);
+      if (tr && prev != null && r.price != null && Math.abs(r.price - prev) > 1e-9) {
+        const cell = tr.children[3]; // price column
+        if (cell) {
+          cell.classList.remove('flash-up', 'flash-down');
+          void cell.offsetWidth;
+          cell.classList.add(r.price >= prev ? 'flash-up' : 'flash-down');
+        }
+      }
+      state.prevPrices[r.symbol] = r.price;
+    }
+  }
+
   function renderHoldings(snap) {
     const tbody = $('#holdings-body');
     const rows = [...(snap.rows || [])];
@@ -324,6 +378,53 @@
       if (typeof av === 'string') return dir * av.localeCompare(bv);
       return dir * (av - bv);
     });
+
+    // FAST PATH: when the row set (sym + id + sort order) hasn't changed,
+    // update only the cells whose values changed.  Avoids tearing down +
+    // rebinding all the click handlers + repainting the whole table on
+    // every price tick.
+    const structureSig = rows.map(r => `${r.id}:${r.symbol}`).join('|');
+    if (tbody._structureSig === structureSig && tbody.children.length === rows.length) {
+      for (const r of rows) {
+        const tr = tbody.querySelector(`tr[data-sym="${r.symbol}"][data-id="${r.id}"]`);
+        if (!tr) continue;
+        const cells = tr.children;
+        // Index map matches the <td> order in the template below.
+        // [0]=symbol [1]=shares [2]=cost [3]=price [4]=day% [5]=value
+        // [6]=pl$ [7]=pl% [8]=signal [9]=stopMA [10]=stopATR [11]=atr% [12]=actions
+        const up = (r.change_pct || 0) >= 0;
+        const plUp = (r.pl || 0) >= 0;
+        const set = (i, txt, cls) => {
+          if (cells[i].textContent !== txt) cells[i].textContent = txt;
+          if (cls != null) cells[i].className = cls;
+        };
+        set(1, fmtNum(r.shares),       'num editable');
+        set(2, fmtMoneySm(r.cost_basis),'num editable');
+        // price gets flash-on-change, handled below
+        const priceCell = cells[3];
+        const newPriceTxt = r.price != null ? fmtMoneySm(r.price) : '—';
+        if (priceCell.textContent !== newPriceTxt) priceCell.textContent = newPriceTxt;
+        set(4, fmtPct(r.change_pct), 'num ' + (up ? 'up' : 'down'));
+        set(5, fmtMoney(r.value),    'num');
+        set(6, fmtMoney(r.pl),       'num ' + (plUp ? 'up' : 'down'));
+        set(7, fmtPct(r.pl_pct),     'num ' + (plUp ? 'up' : 'down'));
+        const sigChip = cells[8].firstElementChild;
+        if (sigChip) {
+          const desired = `sig-chip ${(r.signal || 'hold').toLowerCase()}`;
+          if (sigChip.className !== desired) sigChip.className = desired;
+          if (sigChip.textContent !== (r.signal || 'HOLD')) sigChip.textContent = r.signal || 'HOLD';
+          sigChip.title = r.signal_reason || '';
+        }
+        set(9,  r.stop_loss != null ? fmtMoneySm(r.stop_loss) : '—', 'num');
+        set(10, r.stop_atr  != null ? fmtMoneySm(r.stop_atr)  : '—', 'num');
+        set(11, r.atr_pct   != null ? fmtPct(r.atr_pct)       : '—', 'num');
+      }
+      // Price flash relies on prevPrices, computed below in the slow-path
+      // block — replicate the minimum of it here so flashes still fire.
+      _flashChangedPrices(rows, tbody);
+      return;
+    }
+    tbody._structureSig = structureSig;
 
     tbody.innerHTML = rows.map(r => {
       const up = (r.change_pct || 0) >= 0;
@@ -397,19 +498,7 @@
     }
 
     // flash price on change
-    for (const r of rows) {
-      const prev = state.prevPrices[r.symbol];
-      const tr = tbody.querySelector(`tr[data-sym="${r.symbol}"]`);
-      if (!tr) continue;
-      const cell = tr.querySelector('.price-cell');
-      if (prev != null && r.price != null && Math.abs(r.price - prev) > 1e-9) {
-        cell.classList.remove('flash-up','flash-down');
-        // re-trigger
-        void cell.offsetWidth;
-        cell.classList.add(r.price >= prev ? 'flash-up' : 'flash-down');
-      }
-      state.prevPrices[r.symbol] = r.price;
-    }
+    _flashChangedPrices(rows, tbody);
 
     // delete handlers
     $$('.row-del', tbody).forEach(btn => {

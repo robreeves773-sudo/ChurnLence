@@ -10,7 +10,6 @@ from PyInstaller.utils.hooks import collect_all
 datas = [
     ("templates", "templates"),
     ("static",    "static"),
-    ("tickers.txt", "."),
 ]
 binaries = []
 hiddenimports = []

@@ -83,87 +83,67 @@ SMTP_FROM = os.environ.get("SMTP_FROM", SMTP_USER)
 # Curated symbol universe for autocomplete. Covers the usual asks from an
 # individual retail tracker: mega-caps, popular ETFs, and top crypto.
 SYMBOL_UNIVERSE: list[dict] = [
-    # Mag 7 / mega-cap tech
-    {"symbol": "AAPL",  "name": "Apple",          "kind": "stock"},
-    {"symbol": "MSFT",  "name": "Microsoft",      "kind": "stock"},
-    {"symbol": "NVDA",  "name": "NVIDIA",         "kind": "stock"},
-    {"symbol": "GOOGL", "name": "Alphabet",       "kind": "stock"},
-    {"symbol": "AMZN",  "name": "Amazon",         "kind": "stock"},
-    {"symbol": "META",  "name": "Meta Platforms", "kind": "stock"},
-    {"symbol": "TSLA",  "name": "Tesla",          "kind": "stock"},
-    # Popular retail stocks
-    {"symbol": "AMD",   "name": "Advanced Micro Devices", "kind": "stock"},
-    {"symbol": "AVGO",  "name": "Broadcom",       "kind": "stock"},
-    {"symbol": "NFLX",  "name": "Netflix",        "kind": "stock"},
-    {"symbol": "PLTR",  "name": "Palantir",       "kind": "stock"},
-    {"symbol": "COIN",  "name": "Coinbase",       "kind": "stock"},
-    {"symbol": "HOOD",  "name": "Robinhood",      "kind": "stock"},
-    {"symbol": "SOFI",  "name": "SoFi",           "kind": "stock"},
-    {"symbol": "UBER",  "name": "Uber",           "kind": "stock"},
-    {"symbol": "DIS",   "name": "Disney",         "kind": "stock"},
-    {"symbol": "BA",    "name": "Boeing",         "kind": "stock"},
-    {"symbol": "JPM",   "name": "JPMorgan Chase", "kind": "stock"},
-    {"symbol": "V",     "name": "Visa",           "kind": "stock"},
-    {"symbol": "MA",    "name": "Mastercard",     "kind": "stock"},
-    {"symbol": "COST",  "name": "Costco",         "kind": "stock"},
-    {"symbol": "WMT",   "name": "Walmart",        "kind": "stock"},
-    {"symbol": "XOM",   "name": "Exxon Mobil",    "kind": "stock"},
-    {"symbol": "BRK-B", "name": "Berkshire B",    "kind": "stock"},
-    # ETFs
-    {"symbol": "SPY",   "name": "SPDR S&P 500",   "kind": "etf"},
-    {"symbol": "QQQ",   "name": "Invesco QQQ",    "kind": "etf"},
-    {"symbol": "VOO",   "name": "Vanguard S&P 500", "kind": "etf"},
-    {"symbol": "VTI",   "name": "Vanguard Total Market", "kind": "etf"},
-    {"symbol": "IWM",   "name": "Russell 2000",   "kind": "etf"},
-    {"symbol": "DIA",   "name": "Dow Jones",      "kind": "etf"},
-    {"symbol": "GLD",   "name": "SPDR Gold",      "kind": "etf"},
-    {"symbol": "SLV",   "name": "iShares Silver", "kind": "etf"},
-    {"symbol": "ARKK",  "name": "ARK Innovation", "kind": "etf"},
-    {"symbol": "SMH",   "name": "Semiconductors", "kind": "etf"},
-    {"symbol": "TLT",   "name": "20+ Year Treasury", "kind": "etf"},
-    # Crypto
-    {"symbol": "BTC-USD", "name": "Bitcoin",  "kind": "crypto"},
-    {"symbol": "ETH-USD", "name": "Ethereum", "kind": "crypto"},
-    {"symbol": "SOL-USD", "name": "Solana",   "kind": "crypto"},
-    {"symbol": "XRP-USD", "name": "XRP",      "kind": "crypto"},
-    {"symbol": "ADA-USD", "name": "Cardano",  "kind": "crypto"},
-    {"symbol": "DOGE-USD","name": "Dogecoin", "kind": "crypto"},
-    {"symbol": "LINK-USD","name": "Chainlink","kind": "crypto"},
-    {"symbol": "AVAX-USD","name": "Avalanche","kind": "crypto"},
-    {"symbol": "MATIC-USD","name": "Polygon", "kind": "crypto"},
-    {"symbol": "DOT-USD", "name": "Polkadot", "kind": "crypto"},
-    # Mid/small caps that often miss Yahoo coverage — served via CoinGecko fallback.
-    {"symbol": "ZBCN-USD","name": "Zebec Network", "kind": "crypto"},
-    {"symbol": "ZBC-USD", "name": "Zebec Protocol (legacy)", "kind": "crypto"},
+    # Major caps
+    {"symbol": "BTC-USD", "name": "Bitcoin",   "kind": "crypto"},
+    {"symbol": "ETH-USD", "name": "Ethereum",  "kind": "crypto"},
+    {"symbol": "SOL-USD", "name": "Solana",    "kind": "crypto"},
+    {"symbol": "XRP-USD", "name": "XRP",       "kind": "crypto"},
+    {"symbol": "ADA-USD", "name": "Cardano",   "kind": "crypto"},
+    {"symbol": "DOGE-USD","name": "Dogecoin",  "kind": "crypto"},
+    {"symbol": "LINK-USD","name": "Chainlink", "kind": "crypto"},
+    {"symbol": "AVAX-USD","name": "Avalanche", "kind": "crypto"},
+    {"symbol": "DOT-USD", "name": "Polkadot",  "kind": "crypto"},
+
+    # User's holdings (verified Yahoo coverage where possible)
+    {"symbol": "VET-USD", "name": "VeChain",         "kind": "crypto"},
+    {"symbol": "ALGO-USD","name": "Algorand",        "kind": "crypto"},
+    {"symbol": "XLM-USD", "name": "Stellar",         "kind": "crypto"},
+    {"symbol": "HBAR-USD","name": "Hedera",          "kind": "crypto"},
+    {"symbol": "SHIB-USD","name": "Shiba Inu",       "kind": "crypto"},
+    {"symbol": "CRO-USD", "name": "Cronos",          "kind": "crypto"},
+    {"symbol": "FLR-USD", "name": "Flare",           "kind": "crypto"},
+
+    # Memecoins / Solana ecosystem (CoinGecko fallback)
+    {"symbol": "BONK-USD","name": "Bonk",            "kind": "crypto"},
+    {"symbol": "PEPE-USD","name": "Pepe",            "kind": "crypto"},
+    {"symbol": "FLOKI-USD","name": "Floki",          "kind": "crypto"},
+    {"symbol": "WIF-USD", "name": "dogwifhat",       "kind": "crypto"},
+    {"symbol": "PENGU-USD","name": "Pudgy Penguins", "kind": "crypto"},
+    {"symbol": "ZBCN-USD","name": "Zebec Network",   "kind": "crypto"},
+
+    # Newer launches (likely CoinGecko-only)
+    {"symbol": "ZORA-USD","name": "Zora",                       "kind": "crypto"},
+    {"symbol": "SXT-USD", "name": "Space and Time",             "kind": "crypto"},
+    {"symbol": "WLFI-USD","name": "World Liberty Financial",    "kind": "crypto"},
+    {"symbol": "EDGE-USD","name": "Edge",                       "kind": "crypto"},
+
+    # Solana ecosystem (kept in autocomplete for memecoin scanner adds)
     {"symbol": "JUP-USD", "name": "Jupiter",   "kind": "crypto"},
-    {"symbol": "PYTH-USD","name": "Pyth Network","kind": "crypto"},
+    {"symbol": "PYTH-USD","name": "Pyth",      "kind": "crypto"},
     {"symbol": "JTO-USD", "name": "Jito",      "kind": "crypto"},
-    {"symbol": "WIF-USD", "name": "dogwifhat", "kind": "crypto"},
-    {"symbol": "BONK-USD","name": "Bonk",      "kind": "crypto"},
-    {"symbol": "PEPE-USD","name": "Pepe",      "kind": "crypto"},
-    {"symbol": "FLOKI-USD","name":"Floki",     "kind": "crypto"},
+
+    # AI / DePIN / L2s — popular discovery picks
     {"symbol": "RNDR-USD","name": "Render",    "kind": "crypto"},
-    {"symbol": "TIA-USD", "name": "Celestia",  "kind": "crypto"},
-    {"symbol": "SEI-USD", "name": "Sei",       "kind": "crypto"},
-    {"symbol": "SUI-USD", "name": "Sui",       "kind": "crypto"},
-    {"symbol": "INJ-USD", "name": "Injective", "kind": "crypto"},
-    {"symbol": "FET-USD", "name": "Fetch.ai",  "kind": "crypto"},
     {"symbol": "TAO-USD", "name": "Bittensor", "kind": "crypto"},
+    {"symbol": "FET-USD", "name": "Fetch.ai",  "kind": "crypto"},
+    {"symbol": "TIA-USD", "name": "Celestia",  "kind": "crypto"},
+    {"symbol": "SUI-USD", "name": "Sui",       "kind": "crypto"},
+    {"symbol": "SEI-USD", "name": "Sei",       "kind": "crypto"},
+    {"symbol": "INJ-USD", "name": "Injective", "kind": "crypto"},
     {"symbol": "ARB-USD", "name": "Arbitrum",  "kind": "crypto"},
     {"symbol": "OP-USD",  "name": "Optimism",  "kind": "crypto"},
     {"symbol": "APT-USD", "name": "Aptos",     "kind": "crypto"},
-    {"symbol": "NEAR-USD","name": "NEAR Protocol","kind": "crypto"},
+    {"symbol": "NEAR-USD","name": "NEAR",      "kind": "crypto"},
     {"symbol": "LDO-USD", "name": "Lido DAO",  "kind": "crypto"},
     {"symbol": "AAVE-USD","name": "Aave",      "kind": "crypto"},
 ]
 
 
-# Map ChurnLence symbols → CoinGecko coin IDs. Used as a fallback when
-# yfinance has no data (smaller alts, fresh listings, etc.).  yfinance is
-# always preferred when it works — better OHLC + same-currency.
+# Map ChurnLence symbols → CoinGecko coin IDs. Used when yfinance has no data
+# (most small alts and brand-new listings).  yfinance is preferred when it
+# works — better OHLC + same currency.  EDGE/SXT/WLFI/ZORA/PENGU may need
+# correction once we see live data; the symbol-resolve flow below handles that.
 COINGECKO_MAP: dict[str, str] = {
-    "ZBCN-USD": "zebec-network",
-    "ZBC-USD":  "zebec-protocol",
     "BTC-USD":  "bitcoin",
     "ETH-USD":  "ethereum",
     "SOL-USD":  "solana",
@@ -172,22 +152,35 @@ COINGECKO_MAP: dict[str, str] = {
     "DOGE-USD": "dogecoin",
     "LINK-USD": "chainlink",
     "AVAX-USD": "avalanche-2",
-    "MATIC-USD":"matic-network",
     "DOT-USD":  "polkadot",
-    "JUP-USD":  "jupiter-exchange-solana",
-    "PYTH-USD": "pyth-network",
-    "JTO-USD":  "jito-governance-token",
-    "WIF-USD":  "dogwifcoin",
+    "VET-USD":  "vechain",
+    "ALGO-USD": "algorand",
+    "XLM-USD":  "stellar",
+    "HBAR-USD": "hedera-hashgraph",
+    "SHIB-USD": "shiba-inu",
+    "CRO-USD":  "crypto-com-chain",
+    "FLR-USD":  "flare-networks",
     "BONK-USD": "bonk",
     "PEPE-USD": "pepe",
     "FLOKI-USD":"floki",
+    "WIF-USD":  "dogwifcoin",
+    "PENGU-USD":"pudgy-penguins",
+    "ZBCN-USD": "zebec-network",
+    "ZBC-USD":  "zebec-protocol",
+    "ZORA-USD": "zora",
+    "SXT-USD":  "space-and-time",
+    "WLFI-USD": "world-liberty-financial-wlfi",
+    "EDGE-USD": "edge",                       # may need correction — verify in app
+    "JUP-USD":  "jupiter-exchange-solana",
+    "PYTH-USD": "pyth-network",
+    "JTO-USD":  "jito-governance-token",
     "RNDR-USD": "render-token",
-    "TIA-USD":  "celestia",
-    "SEI-USD":  "sei-network",
-    "SUI-USD":  "sui",
-    "INJ-USD":  "injective-protocol",
-    "FET-USD":  "fetch-ai",
     "TAO-USD":  "bittensor",
+    "FET-USD":  "fetch-ai",
+    "TIA-USD":  "celestia",
+    "SUI-USD":  "sui",
+    "SEI-USD":  "sei-network",
+    "INJ-USD":  "injective-protocol",
     "ARB-USD":  "arbitrum",
     "OP-USD":   "optimism",
     "APT-USD":  "aptos",
@@ -196,57 +189,33 @@ COINGECKO_MAP: dict[str, str] = {
     "AAVE-USD": "aave",
 }
 
-# Preset baskets — one-click add for the "I just want to get started" user.
+# Preset baskets — one-click add. Crypto-only after the refocus.
 PRESET_BASKETS: dict[str, dict] = {
-    "mag7": {
-        "name": "Magnificent 7",
-        "description": "Mega-cap tech — AAPL, MSFT, NVDA, GOOGL, AMZN, META, TSLA",
-        "symbols": ["AAPL", "MSFT", "NVDA", "GOOGL", "AMZN", "META", "TSLA"],
+    "majors": {
+        "name": "Top 6 majors",
+        "description": "BTC, ETH, SOL, XRP, ADA, DOGE",
+        "symbols": ["BTC-USD", "ETH-USD", "SOL-USD", "XRP-USD", "ADA-USD", "DOGE-USD"],
     },
-    "index": {
-        "name": "Core index",
-        "description": "SPY + QQQ + VTI — broad US exposure",
-        "symbols": ["SPY", "QQQ", "VTI"],
+    "memecoins": {
+        "name": "Memecoins",
+        "description": "DOGE, SHIB, PEPE, BONK, FLOKI, WIF, PENGU",
+        "symbols": ["DOGE-USD", "SHIB-USD", "PEPE-USD", "BONK-USD", "FLOKI-USD", "WIF-USD", "PENGU-USD"],
     },
-    "crypto": {
-        "name": "Crypto top 5",
-        "description": "BTC, ETH, SOL, XRP, ADA",
-        "symbols": ["BTC-USD", "ETH-USD", "SOL-USD", "XRP-USD", "ADA-USD"],
+    "solana": {
+        "name": "Solana ecosystem",
+        "description": "SOL, JUP, PYTH, JTO, BONK, WIF, ZBCN",
+        "symbols": ["SOL-USD", "JUP-USD", "PYTH-USD", "JTO-USD", "BONK-USD", "WIF-USD", "ZBCN-USD"],
     },
-    "semis": {
-        "name": "Semis",
-        "description": "NVDA, AMD, AVGO, SMH",
-        "symbols": ["NVDA", "AMD", "AVGO", "SMH"],
+    "ai": {
+        "name": "AI / DePIN",
+        "description": "TAO, RNDR, FET, NEAR",
+        "symbols": ["TAO-USD", "RNDR-USD", "FET-USD", "NEAR-USD"],
     },
 }
 
 _quote_cache: dict[str, tuple[float, dict]] = {}
 _quote_lock = threading.Lock()
-
-
-# Load the big ticker universe once at import. ~6000 US equities/ETFs.
-# Each entry looks like {"symbol": "NVDA", "name": "NVDA", "kind": "stock"} —
-# the curated SYMBOL_UNIVERSE above takes priority (nicer names, preset chips).
-def _load_ticker_universe() -> list[dict]:
-    path = os.path.join(HERE, "tickers.txt")
-    if not os.path.exists(path):
-        return []
-    known = {item["symbol"] for item in SYMBOL_UNIVERSE}
-    out: list[dict] = []
-    with open(path, "r", encoding="utf-8") as f:
-        for line in f:
-            sym = line.strip().upper()
-            if not sym or sym in known:
-                continue
-            # Skip noisy warrant/rights/units — tickers that are 5+ chars ending in W/R/U/Z.
-            if len(sym) >= 5 and sym[-1] in ("W", "R", "U", "Z"):
-                continue
-            out.append({"symbol": sym, "name": sym, "kind": "stock"})
-    return out
-
-
-TICKER_UNIVERSE: list[dict] = _load_ticker_universe()
-TICKER_INDEX: dict[str, dict] = {t["symbol"]: t for t in SYMBOL_UNIVERSE + TICKER_UNIVERSE}
+TICKER_INDEX: dict[str, dict] = {t["symbol"]: t for t in SYMBOL_UNIVERSE}
 
 
 # ---------------------------------------------------------------------------
@@ -955,38 +924,36 @@ def quote(symbol: str):
 
 @app.route("/api/search")
 def search():
-    """Autocomplete. Curated universe first (with nice names + kind),
-    then the wider ~6000-ticker fallback, then yfinance live lookup."""
+    """Crypto-only autocomplete from the curated SYMBOL_UNIVERSE.
+    Falls back to a CoinGecko search for unknown symbols so brand-new
+    listings still resolve."""
     q = (request.args.get("q") or "").upper().strip()
     if not q:
         return jsonify([])
-    prefix_curated, substring_curated = [], []
+    prefix, substring = [], []
     for item in SYMBOL_UNIVERSE:
         sym = item["symbol"]
         name = item["name"].upper()
         if sym.startswith(q) or name.startswith(q):
-            prefix_curated.append(item)
+            prefix.append(item)
         elif q in sym or q in name:
-            substring_curated.append(item)
-    out = prefix_curated + substring_curated
-    # Pad with the wider fallback universe — prefix match only to stay fast.
-    if len(out) < 10:
-        seen = {i["symbol"] for i in out}
-        for item in TICKER_UNIVERSE:
-            sym = item["symbol"]
-            if sym in seen:
-                continue
-            if sym.startswith(q):
-                out.append(item)
-                if len(out) >= 10:
-                    break
-    out = out[:10]
-    if not out and not DEMO_MODE and len(q) <= 8:
+            substring.append(item)
+    out = (prefix + substring)[:10]
+    if not out and not DEMO_MODE:
+        # Try CoinGecko's /search — accurate for fresh tokens.
         try:
-            info = yf.Ticker(q).info
-            nm = info.get("shortName") or info.get("longName")
-            if nm:
-                out.append({"symbol": q, "name": nm, "kind": "stock"})
+            url = f"https://api.coingecko.com/api/v3/search?query={q.lower()}"
+            req = urllib.request.Request(url, headers={"User-Agent": "ChurnLence/1.0"})
+            with urllib.request.urlopen(req, timeout=4) as r:
+                payload = json.loads(r.read())
+            for coin in (payload.get("coins") or [])[:5]:
+                sym = (coin.get("symbol") or "").upper() + "-USD"
+                out.append({
+                    "symbol": sym,
+                    "name": coin.get("name") or sym,
+                    "kind": "crypto",
+                    "_coingecko_id": coin.get("id"),
+                })
         except Exception:
             pass
     return jsonify(out)
@@ -1583,12 +1550,47 @@ def _signal_watcher_loop():
 
 @app.route("/api/portfolios/<int:pid>/stream")
 def stream(pid: int):
-    """Server-Sent Events — live portfolio snapshot every STREAM_INTERVAL seconds."""
+    """Server-Sent Events — pushes ONLY when something materially changed
+    (prices moved, signals flipped, holdings edited).  A keep-alive comment
+    fires every STREAM_INTERVAL seconds so the connection doesn't close.
+
+    Sending only deltas is the single biggest perf win — the client used to
+    re-render every 5s even when nothing moved, which animated charts and
+    rebuilt DOM for no reason."""
+    def _digest(snap: dict) -> str:
+        # Materially-changed fingerprint: per-row symbol/price/signal + totals.
+        # Round price to 6 sig figs so micro-jitter doesn't spam.
+        rows = snap.get("rows") or []
+        parts = [f"{r['symbol']}|{round(r.get('price') or 0, 6)}|{r.get('signal')}"
+                 for r in rows]
+        t = snap.get("totals") or {}
+        parts.append(f"V{round(t.get('value') or 0, 2)}|P{round(t.get('pl') or 0, 2)}")
+        return hashlib.sha1("\n".join(parts).encode()).hexdigest()
+
     def generate() -> Iterable[bytes]:
+        last_digest = None
+        idle_ticks = 0
+        # First payload always goes out so the client can render initial state.
+        first = _portfolio_snapshot(pid)
+        yield f"data: {json.dumps(first)}\n\n".encode()
+        last_digest = _digest(first)
         while True:
-            snap = _portfolio_snapshot(pid)
-            yield f"data: {json.dumps(snap)}\n\n".encode()
             time.sleep(STREAM_INTERVAL)
+            snap = _portfolio_snapshot(pid)
+            digest = _digest(snap)
+            if digest == last_digest:
+                idle_ticks += 1
+                # Heartbeat as an SSE comment line — keeps proxies happy
+                # without triggering a client onmessage handler.
+                yield b": keep-alive\n\n"
+                # If we've been idle a while, slow the loop down to halve CPU.
+                if idle_ticks >= 6:
+                    time.sleep(STREAM_INTERVAL)
+                continue
+            idle_ticks = 0
+            last_digest = digest
+            yield f"data: {json.dumps(snap)}\n\n".encode()
+
     return Response(generate(), mimetype="text/event-stream", headers={
         "Cache-Control": "no-cache",
         "X-Accel-Buffering": "no",
