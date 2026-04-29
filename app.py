@@ -115,7 +115,6 @@ SYMBOL_UNIVERSE: list[dict] = [
     {"symbol": "ZORA-USD","name": "Zora",                       "kind": "crypto"},
     {"symbol": "SXT-USD", "name": "Space and Time",             "kind": "crypto"},
     {"symbol": "WLFI-USD","name": "World Liberty Financial",    "kind": "crypto"},
-    {"symbol": "EDGE-USD","name": "Edge",                       "kind": "crypto"},
 
     # Solana ecosystem (kept in autocomplete for memecoin scanner adds)
     {"symbol": "JUP-USD", "name": "Jupiter",   "kind": "crypto"},
@@ -141,8 +140,8 @@ SYMBOL_UNIVERSE: list[dict] = [
 
 # Map ChurnLence symbols → CoinGecko coin IDs. Used when yfinance has no data
 # (most small alts and brand-new listings).  yfinance is preferred when it
-# works — better OHLC + same currency.  EDGE/SXT/WLFI/ZORA/PENGU may need
-# correction once we see live data; the symbol-resolve flow below handles that.
+# works — better OHLC + same currency.  SXT/WLFI/ZORA/PENGU may need
+# correction once we see live data; the symbol-resolve flow handles that.
 COINGECKO_MAP: dict[str, str] = {
     "BTC-USD":  "bitcoin",
     "ETH-USD":  "ethereum",
@@ -170,7 +169,6 @@ COINGECKO_MAP: dict[str, str] = {
     "ZORA-USD": "zora",
     "SXT-USD":  "space-and-time",
     "WLFI-USD": "world-liberty-financial-wlfi",
-    "EDGE-USD": "edge",                       # may need correction — verify in app
     "JUP-USD":  "jupiter-exchange-solana",
     "PYTH-USD": "pyth-network",
     "JTO-USD":  "jito-governance-token",
