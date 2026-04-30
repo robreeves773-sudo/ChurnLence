@@ -699,6 +699,60 @@
   }
 
   // ---------- concentration / HHI -------------------------------------------
+  // ---------- perp funding rates (Overview) -------------------------------
+  async function refreshFunding() {
+    const card = $('#funding-card');
+    if (!card) return;
+    // Build symbol list from current portfolio + watchlist (top 6 dedup)
+    const symbols = new Set();
+    (state.snapshot?.rows || []).forEach(r => {
+      const s = (r.symbol || '').replace(/-USD$/, '');
+      if (s && /^[A-Z0-9]{2,8}$/.test(s)) symbols.add(s);
+    });
+    state.watchlist.forEach(s => {
+      const bare = s.replace(/-USD$/, '');
+      if (/^[A-Z0-9]{2,8}$/.test(bare)) symbols.add(bare);
+    });
+    if (!symbols.has('BTC')) symbols.add('BTC');
+    if (!symbols.has('SOL')) symbols.add('SOL');
+    const list = [...symbols].slice(0, 8).join(',');
+    try {
+      const data = await api(`/api/funding?symbol=${encodeURIComponent(list)}`);
+      if (!data.rows || !data.rows.length) {
+        card.hidden = true;
+        return;
+      }
+      card.hidden = false;
+      $('#funding-as-of').textContent = `Updated ${new Date(data.as_of).toLocaleTimeString()}`;
+      const compactUsd = v => {
+        const a = Math.abs(v); if (a >= 1e9) return '$' + (v/1e9).toFixed(2) + 'B';
+        if (a >= 1e6) return '$' + (v/1e6).toFixed(1) + 'M';
+        if (a >= 1e3) return '$' + (v/1e3).toFixed(0) + 'K';
+        return '$' + Math.round(v);
+      };
+      const grid = $('#funding-grid');
+      grid.innerHTML = data.rows.map(r => {
+        const venuePills = r.venues.map(v => {
+          let cls = v.funding > 0 ? 'up' : v.funding < 0 ? 'down' : '';
+          if (Math.abs(v.funding) >= 0.075) cls = 'hot';
+          const sign = v.funding >= 0 ? '+' : '';
+          return `<span class="funding-pill ${cls}" title="${v.venue}: ${v.funding.toFixed(4)}% per interval">${v.venue.charAt(0)}${v.venue === 'Hyperliquid' ? 'L' : ''} ${sign}${v.funding.toFixed(3)}%</span>`;
+        }).join('');
+        const spread = r.spread_bps != null
+          ? `<span class="funding-pill" title="Cross-venue funding spread (max - min) — arb opportunity if &gt; 5 bps">Δ ${r.spread_bps.toFixed(1)} bps</span>`
+          : '';
+        return `<div class="funding-row">
+          <span class="sym">${escapeHtml(r.symbol)}</span>
+          <div class="venues">${venuePills} ${spread}</div>
+          <span class="oi">OI ${compactUsd(r.total_oi_usd || 0)}</span>
+          <span class="regime ${r.regime || 'neutral'}">${(r.regime || 'neutral').replace(/-/g, ' ')}</span>
+        </div>`;
+      }).join('') + '<div class="funding-warn">⚠ Funding > +0.075% per 8h has historically preceded BTC mean-reversion. Negative funding = shorts paying = squeeze setup.</div>';
+    } catch (err) {
+      card.hidden = true;
+    }
+  }
+
   // ---------- market regime (top of Overview) ------------------------------
   async function refreshMarket() {
     const card = $('#market-regime');
@@ -1033,9 +1087,22 @@
       const rsiHtml = q.rsi != null
         ? `<span class="rsi-chip ${q.rsi_label || 'neutral'}">RSI ${q.rsi.toFixed(0)}</span>`
         : '';
+      // MACD chip: green if hist > 0 (bullish momentum), red if < 0
+      const macdHtml = q.macd_hist != null
+        ? `<span class="rsi-chip ${q.macd_hist >= 0 ? 'oversold' : 'overbought'}" title="MACD ${q.macd?.toFixed(2)} / signal ${q.macd_signal?.toFixed(2)}">MACD ${q.macd_hist >= 0 ? '+' : ''}${q.macd_hist.toFixed(2)}</span>`
+        : '';
+      // %B chip: where price sits within Bollinger Bands (>0.95 = upper, <0.05 = lower)
+      let bbLabel = 'neutral';
+      if (q.bb_pct != null) {
+        if (q.bb_pct >= 0.95) bbLabel = 'overbought';
+        else if (q.bb_pct <= 0.05) bbLabel = 'oversold';
+      }
+      const bbHtml = q.bb_pct != null
+        ? `<span class="rsi-chip ${bbLabel}" title="Bollinger %B (0=lower band, 1=upper). Width ${q.bb_width?.toFixed(3)} (${q.bb_width < 0.04 ? 'squeeze!' : 'normal'})">%B ${(q.bb_pct * 100).toFixed(0)}</span>`
+        : '';
       $('#chart-sub').innerHTML =
         `<span class="${chg >= 0 ? 'up' : 'down'}" style="color:${chg>=0?'var(--success)':'var(--danger)'}">${chg>=0?'▲':'▼'} ${fmtPct(chg)}</span>
-         &nbsp; EMA21 ${fmtMoneySm(q.ema21)} · Stop MA ${fmtMoneySm(q.stop_loss)} · Stop ATR ${fmtMoneySm(q.stop_atr)} · ATR% ${q.atr_pct != null ? fmtPct(q.atr_pct) : '—'} · ${rsiHtml} · <span class="sig-chip ${(q.signal||'hold').toLowerCase()}">${q.signal}</span>`;
+         &nbsp; EMA21 ${fmtMoneySm(q.ema21)} · Stop MA ${fmtMoneySm(q.stop_loss)} · Stop ATR ${fmtMoneySm(q.stop_atr)} · ATR% ${q.atr_pct != null ? fmtPct(q.atr_pct) : '—'} · ${rsiHtml} ${macdHtml} ${bbHtml} · <span class="sig-chip ${(q.signal||'hold').toLowerCase()}">${q.signal}</span>`;
       // Fetch news for the symbol (non-blocking)
       refreshNews(state.chartSymbol);
 
@@ -1056,6 +1123,10 @@
             { label: 'EMA 21',  data: hist.map(h => h.ema21),  borderColor: '#ffffff', borderWidth: 1.3, pointRadius: 0, tension: 0.15 },
             { label: 'EMA 50',  data: hist.map(h => h.ema50),  borderColor: '#00d4ff', borderWidth: 1.3, pointRadius: 0, tension: 0.15 },
             { label: 'EMA 200', data: hist.map(h => h.ema200), borderColor: '#ff8aae', borderWidth: 1.3, pointRadius: 0, tension: 0.15 },
+            // Bollinger Bands — upper/mid/lower as a thin envelope (Senbonzakura pink, low alpha)
+            { label: 'BB upper', data: hist.map(h => h.bb_upper), borderColor: 'rgba(179,136,255,0.45)', borderWidth: 1, pointRadius: 0, borderDash: [3,3] },
+            { label: 'BB mid',   data: hist.map(h => h.bb_mid),   borderColor: 'rgba(179,136,255,0.25)', borderWidth: 1, pointRadius: 0 },
+            { label: 'BB lower', data: hist.map(h => h.bb_lower), borderColor: 'rgba(179,136,255,0.45)', borderWidth: 1, pointRadius: 0, borderDash: [3,3] },
             { label: 'Stop',    data: hist.map(() => q.stop_loss),
               borderColor: '#cc1f33', borderWidth: 1, pointRadius: 0, borderDash: [6,5] },
           ]
@@ -2119,11 +2190,15 @@
       refreshTransactions();
       refreshMarket();
       refreshCorrelation();
+      // Funding rates update on cycle boundaries; pull right after first
+      // snapshot (so symbol list is populated from holdings + watchlist).
+      setTimeout(refreshFunding, 1500);
       applyLaunchTab();
-      setInterval(refreshWatchlist, 30000);   // watchlist refreshes every 30s
-      setInterval(refreshTransactions, 60000); // transactions every minute
-      setInterval(refreshMarket, 5 * 60 * 1000); // market regime every 5 min
+      setInterval(refreshWatchlist, 30000);
+      setInterval(refreshTransactions, 60000);
+      setInterval(refreshMarket, 5 * 60 * 1000);
       setInterval(refreshCorrelation, 5 * 60 * 1000);
+      setInterval(refreshFunding, 60 * 1000); // funding every minute
       setTimeout(moveTabUnderline, 50);
     } catch (err) {
       toast(`Boot failed: ${err.message}`, 'error');

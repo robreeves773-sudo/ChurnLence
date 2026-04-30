@@ -369,6 +369,14 @@ class Quote:
     atr_pct: float | None         # ATR as % of price (volatility gauge)
     rsi: float | None             # 14-period RSI (>70 overbought, <30 oversold)
     rsi_label: str                # "overbought" | "oversold" | "neutral"
+    macd: float | None            # MACD line value (latest)
+    macd_signal: float | None     # MACD signal line value (latest)
+    macd_hist: float | None       # histogram (line - signal)
+    bb_upper: float | None        # Bollinger upper band (latest)
+    bb_mid: float | None          # Bollinger middle (SMA20)
+    bb_lower: float | None        # Bollinger lower band
+    bb_pct: float | None          # %B: position within bands 0..1
+    bb_width: float | None        # band width / mid (volatility gauge; squeezes near 0)
     volume_24h: float | None      # last bar's volume (USD for crypto)
     rvol: float | None            # relative volume vs 20-bar avg; >1.5 = above avg, >3 = unusual
     rvol_label: str               # "low" | "normal" | "high" | "unusual"
@@ -454,6 +462,50 @@ def _rsi(closes: list[float], period: int = 14) -> list[float]:
         rs = (avg_gain / avg_loss) if avg_loss > 0 else 0.0
         out.append(100 - 100 / (1 + rs) if avg_loss > 0 else 100.0)
     return out[:n]
+
+
+def _macd(closes: list[float], fast: int = 12, slow: int = 26, signal: int = 9) -> tuple[list[float], list[float], list[float]]:
+    """Standard MACD (12, 26, 9). Returns (line, signal, histogram).
+
+    line  = EMA(fast) - EMA(slow)         — momentum direction + magnitude
+    signal = EMA(line, 9)                 — smoothed line, used for crossovers
+    hist  = line - signal                 — bar-style momentum, zero-cross = signal flip
+    """
+    if len(closes) < slow + signal:
+        return [0.0] * len(closes), [0.0] * len(closes), [0.0] * len(closes)
+    ef, es = _ema(closes, fast), _ema(closes, slow)
+    line = [ef[i] - es[i] for i in range(len(closes))]
+    sig = _ema(line, signal)
+    hist = [line[i] - sig[i] for i in range(len(closes))]
+    return line, sig, hist
+
+
+def _bbands(closes: list[float], period: int = 20, std_mult: float = 2.0) -> tuple[list[float], list[float], list[float]]:
+    """Bollinger Bands (20, 2σ). Returns (upper, mid, lower).
+
+    mid = SMA(20).  upper/lower = mid ± std_mult × rolling stdev.
+    Bandwidth = (upper - lower) / mid is a volatility gauge — squeezes
+    (low BW) often precede breakouts. Position within bands (0..1) is also
+    useful: >0.95 = near upper band (mean-revert short), <0.05 = near lower
+    band (mean-revert long).
+    """
+    n = len(closes)
+    if n < period:
+        return [0.0] * n, list(closes), [0.0] * n
+    upper, mid, lower = [0.0] * n, [0.0] * n, [0.0] * n
+    for i in range(n):
+        if i < period - 1:
+            mid[i] = sum(closes[: i + 1]) / (i + 1)
+            upper[i] = lower[i] = mid[i]
+            continue
+        window = closes[i - period + 1 : i + 1]
+        m = sum(window) / period
+        var = sum((x - m) ** 2 for x in window) / period
+        sd = var ** 0.5
+        mid[i] = m
+        upper[i] = m + std_mult * sd
+        lower[i] = m - std_mult * sd
+    return upper, mid, lower
 
 
 def _overkill_signal(
@@ -678,6 +730,8 @@ def fetch_quote(symbol: str, force: bool = False, mode: str = "swing") -> Quote 
     ema200 = _ema(closes, 200) if mode == "swing" else []
     atr_series = _atr(highs, lows, closes, 14) if highs and lows else []
     rsi_series = _rsi(closes, 14)
+    macd_line, macd_sig, macd_hist = _macd(closes)
+    bb_up, bb_mid, bb_lo = _bbands(closes)
 
     price = closes[-1]
     prev_close = closes[-2] if len(closes) > 1 else price
@@ -720,6 +774,20 @@ def fetch_quote(symbol: str, force: bool = False, mode: str = "swing") -> Quote 
         rsi_label = "oversold"
     else:
         rsi_label = "neutral"
+    macd_last = macd_line[-1] if macd_line else None
+    macd_sig_last = macd_sig[-1] if macd_sig else None
+    macd_hist_last = macd_hist[-1] if macd_hist else None
+    bb_up_last = bb_up[-1] if bb_up else None
+    bb_mid_last = bb_mid[-1] if bb_mid else None
+    bb_lo_last = bb_lo[-1] if bb_lo else None
+    # %B: where current price sits within the bands (0 = lower, 1 = upper)
+    bb_pct = None
+    if bb_up_last is not None and bb_lo_last is not None and bb_up_last > bb_lo_last:
+        bb_pct = (price - bb_lo_last) / (bb_up_last - bb_lo_last)
+    # Bandwidth as a % of mid; <0.04 is a tight squeeze
+    bb_width = None
+    if bb_mid_last and bb_up_last is not None and bb_lo_last is not None:
+        bb_width = (bb_up_last - bb_lo_last) / bb_mid_last
     # Relative volume: last bar's volume vs 20-bar average.
     # >1.5 = above average, >3 = unusual buying.  Falls back to 1.0 if we
     # don't have at least 20 bars of clean data.
@@ -762,6 +830,12 @@ def fetch_quote(symbol: str, force: bool = False, mode: str = "swing") -> Quote 
             "ema200": round(ema200[i], 4) if (ema200 and i >= 199) else None,
             "atr":   round(atr_series[i], 4) if atr_series else None,
             "rsi":   round(rsi_series[i], 1) if rsi_series else None,
+            "macd":         round(macd_line[i], 4) if macd_line else None,
+            "macd_signal":  round(macd_sig[i],  4) if macd_sig  else None,
+            "macd_hist":    round(macd_hist[i], 4) if macd_hist else None,
+            "bb_upper": round(bb_up[i],  4) if bb_up  else None,
+            "bb_mid":   round(bb_mid[i], 4) if bb_mid else None,
+            "bb_lower": round(bb_lo[i],  4) if bb_lo  else None,
         })
 
     quote = Quote(
@@ -779,6 +853,14 @@ def fetch_quote(symbol: str, force: bool = False, mode: str = "swing") -> Quote 
         atr_pct=round(atr_pct, 3) if atr_pct else None,
         rsi=round(rsi_last, 1) if rsi_last is not None else None,
         rsi_label=rsi_label,
+        macd=round(macd_last, 4) if macd_last is not None else None,
+        macd_signal=round(macd_sig_last, 4) if macd_sig_last is not None else None,
+        macd_hist=round(macd_hist_last, 4) if macd_hist_last is not None else None,
+        bb_upper=round(bb_up_last, 4) if bb_up_last is not None else None,
+        bb_mid=round(bb_mid_last, 4) if bb_mid_last is not None else None,
+        bb_lower=round(bb_lo_last, 4) if bb_lo_last is not None else None,
+        bb_pct=round(bb_pct, 3) if bb_pct is not None else None,
+        bb_width=round(bb_width, 4) if bb_width is not None else None,
         volume_24h=round(last_volume, 2) if last_volume else None,
         rvol=rvol,
         rvol_label=rvol_label,
@@ -1030,6 +1112,11 @@ def _portfolio_snapshot(portfolio_id: int, mode: str = "swing") -> dict:
             "atr_pct": q.atr_pct,
             "rsi": q.rsi,
             "rsi_label": q.rsi_label,
+            "macd": q.macd,
+            "macd_signal": q.macd_signal,
+            "macd_hist": q.macd_hist,
+            "bb_pct": q.bb_pct,
+            "bb_width": q.bb_width,
             "volume_24h": q.volume_24h,
             "rvol": q.rvol,
             "rvol_label": q.rvol_label,
@@ -1791,6 +1878,171 @@ def digest_send_now(pid: int):
 
 _market_cache: dict[str, tuple[float, dict]] = {}
 _MARKET_TTL = 300  # 5 min
+
+_funding_cache: dict[str, tuple[float, dict]] = {}
+_FUNDING_TTL = 60  # 1 min — funding rates update on 1h/8h cadences but freshness matters
+
+
+def _binance_funding(symbol: str) -> dict | None:
+    """Fetch Binance USDT-perp funding + OI for a symbol like BTCUSDT."""
+    try:
+        prem_url = f"https://fapi.binance.com/fapi/v1/premiumIndex?symbol={symbol}"
+        oi_url   = f"https://fapi.binance.com/fapi/v1/openInterest?symbol={symbol}"
+        with urllib.request.urlopen(urllib.request.Request(prem_url, headers={"User-Agent": "ChurnLence/1.0"}), timeout=4) as r:
+            prem = json.loads(r.read())
+        with urllib.request.urlopen(urllib.request.Request(oi_url, headers={"User-Agent": "ChurnLence/1.0"}), timeout=4) as r:
+            oi = json.loads(r.read())
+        return {
+            "venue":      "Binance",
+            "symbol":     symbol,
+            "mark_price": float(prem.get("markPrice", 0)),
+            "funding":    float(prem.get("lastFundingRate", 0)) * 100,   # %
+            "next_funding_at": prem.get("nextFundingTime"),
+            "open_interest":   float(oi.get("openInterest", 0)),
+        }
+    except Exception:
+        return None
+
+
+def _bybit_funding(symbol: str) -> dict | None:
+    """Bybit v5 perp tickers — single call returns mark + funding + OI."""
+    try:
+        url = f"https://api.bybit.com/v5/market/tickers?category=linear&symbol={symbol}"
+        with urllib.request.urlopen(urllib.request.Request(url, headers={"User-Agent": "ChurnLence/1.0"}), timeout=4) as r:
+            payload = json.loads(r.read())
+        items = (payload.get("result") or {}).get("list") or []
+        if not items:
+            return None
+        t = items[0]
+        return {
+            "venue":      "Bybit",
+            "symbol":     symbol,
+            "mark_price": float(t.get("markPrice", 0)),
+            "funding":    float(t.get("fundingRate", 0)) * 100,
+            "next_funding_at": int(t.get("nextFundingTime", 0)) if t.get("nextFundingTime") else None,
+            "open_interest":   float(t.get("openInterestValue", 0)),  # USD-quoted on Bybit
+        }
+    except Exception:
+        return None
+
+
+def _hyperliquid_funding() -> dict[str, dict]:
+    """Hyperliquid: single bulk request returns funding + OI for ALL perps.
+    Returns a dict keyed by symbol (e.g. 'BTC', 'SOL', 'HYPE')."""
+    try:
+        url = "https://api.hyperliquid.xyz/info"
+        body = json.dumps({"type": "metaAndAssetCtxs"}).encode()
+        req = urllib.request.Request(url, data=body, method="POST",
+                                     headers={"Content-Type": "application/json",
+                                              "User-Agent": "ChurnLence/1.0"})
+        with urllib.request.urlopen(req, timeout=6) as r:
+            payload = json.loads(r.read())
+        meta, ctxs = payload[0], payload[1]
+        universe = meta.get("universe") or []
+        out: dict[str, dict] = {}
+        for u, c in zip(universe, ctxs):
+            sym = u.get("name", "")
+            try:
+                out[sym] = {
+                    "venue":      "Hyperliquid",
+                    "symbol":     sym,
+                    "mark_price": float(c.get("markPx", 0)),
+                    "funding":    float(c.get("funding", 0)) * 100,           # already hourly rate
+                    "open_interest":   float(c.get("openInterest", 0)),
+                    "day_volume":      float(c.get("dayNtlVlm", 0)),
+                    "premium":         float(c.get("premium", 0)) * 100,
+                }
+            except (TypeError, ValueError):
+                continue
+        return out
+    except Exception:
+        return {}
+
+
+@app.route("/api/funding")
+def funding():
+    """Aggregated derivatives data across Binance, Bybit, and Hyperliquid.
+
+    Wave 6 + Wave 23 both flagged this as the most undersupplied UX in the
+    retail crypto space.  Every input is a free public API.
+
+    Query: ?symbol=BTC|SOL|XRP|...  (multiple via comma)
+    Returns rate%, OI, mark price per venue + a venue-spread number when 2+
+    venues report the same symbol (this is the cross-venue arb signal).
+    """
+    raw = (request.args.get("symbol") or "BTC,ETH,SOL").upper()
+    syms = [s.strip() for s in raw.split(",") if s.strip()][:8]
+    now = time.time()
+    cache_key = "|".join(syms)
+    cached = _funding_cache.get(cache_key)
+    if cached and now - cached[0] < _FUNDING_TTL:
+        return jsonify(cached[1])
+
+    # Hyperliquid: one call for everything
+    hl_all = _hyperliquid_funding()
+
+    out_rows = []
+    for sym in syms:
+        venues = []
+        # Binance perp = SYMBOL + USDT
+        b = _binance_funding(sym + "USDT")
+        if b: venues.append(b)
+        # Bybit perp = SYMBOL + USDT
+        y = _bybit_funding(sym + "USDT")
+        if y: venues.append(y)
+        # Hyperliquid uses bare symbol
+        if sym in hl_all:
+            venues.append(hl_all[sym])
+        if not venues:
+            continue
+        # Cross-venue funding spread (max - min) — arb signal
+        rates = [v["funding"] for v in venues if v.get("funding") is not None]
+        spread_bps = (max(rates) - min(rates)) * 100 if len(rates) >= 2 else None
+        # Aggregate OI weighted by USD value
+        total_oi_usd = 0.0
+        for v in venues:
+            oi = v.get("open_interest") or 0
+            mark = v.get("mark_price") or 0
+            # Binance returns OI in coins; Bybit returns OI value (USD); HL too
+            usd = oi if v["venue"] in ("Bybit", "Hyperliquid") else oi * mark
+            v["open_interest_usd"] = round(usd, 0)
+            total_oi_usd += usd
+        out_rows.append({
+            "symbol":      sym,
+            "venues":      venues,
+            "venues_count": len(venues),
+            "spread_bps":  round(spread_bps, 2) if spread_bps is not None else None,
+            "total_oi_usd": round(total_oi_usd, 0),
+            "regime":      _funding_regime(rates),
+        })
+
+    body = {
+        "rows":     out_rows,
+        "as_of":    datetime.now(timezone.utc).isoformat(),
+        "venues":   ["Binance", "Bybit", "Hyperliquid"],
+    }
+    _funding_cache[cache_key] = (now, body)
+    return jsonify(body)
+
+
+def _funding_regime(rates: list[float]) -> str:
+    """Classify the funding regime from the average of a venue list.
+
+    Numbers are in PERCENT per funding interval (Binance/Bybit settle every 8h,
+    HL every hour — we treat them as comparable here for a rough regime read).
+    """
+    if not rates:
+        return "no-data"
+    avg = sum(rates) / len(rates)
+    if avg > 0.075:
+        return "overheated-long"     # >75 bps per 8h, classic mean-reversion zone
+    if avg > 0.02:
+        return "bullish-skew"
+    if avg < -0.05:
+        return "crowded-short"        # negative funding = shorts paying = squeeze setup
+    if avg < -0.01:
+        return "bearish-skew"
+    return "neutral"
 
 
 @app.route("/api/market")
