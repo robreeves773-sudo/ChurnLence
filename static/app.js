@@ -253,6 +253,8 @@
     if (snap.error) { toast(snap.error, 'error'); return; }
     const prevSnap = state.snapshot;
     state.snapshot = snap;
+    // First snapshot in — kill skeleton loaders
+    document.body.classList.add('is-loaded');
     detectSignalTransitions(snap.rows || []);
 
     const rowsHash = fingerprintRows(snap.rows);
@@ -2047,9 +2049,66 @@
     }
   }
 
+  // ---------- Cmd-K palette wiring -----------------------------------------
+  // Build the API the palette uses to hook back into the app.  Done up here
+  // so it's initialised before bind() wires keyboard shortcuts.
+  function initCommandPalette() {
+    if (!window.CmdK) return; // module not loaded
+    window.CmdK.init({
+      snapshot:        () => state.snapshot,
+      watchlist:       () => state.watchlist,
+      setTab:          (name) => setTab(name),
+      openChart:       (sym) => {
+        state.chartSymbol = sym;
+        const sel = $('#chart-symbol-select');
+        if (sel && [...sel.options].some(o => o.value === sym)) sel.value = sym;
+        setTab('charts');
+      },
+      addToWatchlist:  (sym) => {
+        if (state.watchlist.includes(sym)) {
+          toast(`${sym} already on watchlist`, 'info');
+          return;
+        }
+        state.watchlist.push(sym);
+        saveJSON('churnlence.watchlist', state.watchlist);
+        refreshWatchlist();
+        toast(`${sym} added to watchlist`, 'success');
+        Sound.ding();
+      },
+      openSellModal:   (sym, qty) => {
+        if (typeof openSellModal === 'function') {
+          openSellModal(sym);
+          if (qty) {
+            const n = parseFloat(qty);
+            if (Number.isFinite(n)) {
+              const f = $('#sell-form');
+              if (f) f.elements.shares.value = n;
+            }
+          }
+        } else { toast(`Open sell for ${sym}`, 'info'); }
+      },
+      openAddPosition: () => openModal('add-holding-modal'),
+      openImport:      () => openModal('import-csv-modal'),
+      openAlerts:      () => {
+        // The portfolio menu owns this — simulate a click
+        const btn = $('[data-pm="alerts"]');
+        if (btn) btn.click();
+      },
+      refresh:         () => { refreshOnce(); refreshWatchlist(); refreshMarket(); toast('Refreshed', 'info', 1500); },
+      exportCsv:       () => { if (typeof exportCsv === 'function') exportCsv(); },
+      setMode:         (mode) => { if (typeof setMode === 'function') setMode(mode); },
+      setDensity:      (val) => window.CmdK.setDensity(val),
+      toggleSound:     () => toggleSound(),
+      toggleNotify:    () => toggleNotify(),
+      openHotkeys:     () => window.CmdK.openHotkeys(),
+      toast:           (msg, kind, ms) => toast(msg, kind, ms),
+    });
+  }
+
   // ---------- boot -----------------------------------------------------------
   async function boot() {
     bind();
+    initCommandPalette();
     registerServiceWorker();
     wireInstallPrompt();
     try {

@@ -1,0 +1,327 @@
+/* ChurnLence command palette — Bleach palette, Tensa Zangetsu glow */
+
+.cmdk-backdrop {
+  position: fixed; inset: 0; z-index: 200;
+  background: rgba(0,0,0,0.55);
+  backdrop-filter: blur(10px) saturate(140%);
+  display: grid; place-items: start center; padding: 12vh 16px 16px;
+  opacity: 0; transition: opacity 0.06s linear;
+  font-family: 'Inter', -apple-system, sans-serif;
+}
+.cmdk-backdrop[hidden] { display: none; }
+.cmdk-backdrop.cmdk-visible { opacity: 1; }
+
+.cmdk-modal {
+  width: min(640px, 100%);
+  background: linear-gradient(180deg, #11111a 0%, #0a0a13 100%);
+  border: 1px solid rgba(255, 106, 0, 0.32);
+  border-radius: 14px;
+  box-shadow:
+    0 30px 80px rgba(0, 0, 0, 0.6),
+    0 0 0 1px rgba(0, 212, 255, 0.06),
+    0 0 60px rgba(255, 106, 0, 0.18);
+  overflow: hidden;
+  transform: translateY(-6px);
+  transition: transform 0.08s cubic-bezier(0.2, 0.6, 0.2, 1);
+}
+.cmdk-backdrop.cmdk-visible .cmdk-modal { transform: translateY(0); }
+
+/* Input row */
+.cmdk-input-row {
+  display: flex; align-items: center; gap: 12px;
+  padding: 14px 16px;
+  border-bottom: 1px solid rgba(255, 255, 255, 0.06);
+}
+.cmdk-prompt {
+  width: 24px; height: 24px;
+  display: grid; place-items: center;
+  font-size: 14px;
+  background: linear-gradient(135deg, #ff6a00, #cc1f33);
+  color: #1a0500;
+  border-radius: 6px;
+  flex-shrink: 0;
+}
+.cmdk-input {
+  flex: 1; background: transparent; border: 0;
+  font: inherit; font-size: 16px; color: #f5f5f5;
+  outline: 0; padding: 4px 0;
+  font-feature-settings: 'tnum';
+}
+.cmdk-input::placeholder { color: #6a6a75; }
+.cmdk-esc {
+  background: rgba(255, 255, 255, 0.06);
+  border: 1px solid rgba(255, 255, 255, 0.08);
+  border-radius: 5px;
+  padding: 3px 7px;
+  font-size: 10px;
+  color: #a0a0aa;
+  font-family: 'JetBrains Mono', monospace;
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+}
+
+/* List */
+.cmdk-list {
+  max-height: 56vh;
+  overflow-y: auto;
+  padding: 6px 6px 8px;
+  scrollbar-width: thin;
+  scrollbar-color: rgba(255, 106, 0, 0.4) transparent;
+}
+.cmdk-list::-webkit-scrollbar { width: 8px; }
+.cmdk-list::-webkit-scrollbar-thumb {
+  background: rgba(255, 106, 0, 0.32);
+  border-radius: 4px;
+}
+
+.cmdk-cat {
+  font-family: 'JetBrains Mono', monospace;
+  font-size: 9px;
+  color: #6a6a75;
+  text-transform: uppercase;
+  letter-spacing: 0.18em;
+  padding: 10px 12px 4px;
+  margin-top: 4px;
+}
+.cmdk-cat:first-child { margin-top: 0; }
+
+.cmdk-row {
+  display: flex; align-items: center; gap: 12px;
+  padding: 9px 12px;
+  border-radius: 8px;
+  cursor: pointer;
+  transition: background 0.06s linear;
+  font-size: 13px;
+  color: #c9d1d9;
+}
+.cmdk-row.active {
+  background: linear-gradient(90deg,
+    rgba(255, 106, 0, 0.12) 0%,
+    rgba(0, 212, 255, 0.06) 100%);
+  border-inline-start: 2px solid #ff6a00;
+  padding-inline-start: 10px;
+}
+.cmdk-icon {
+  width: 24px; height: 24px;
+  display: grid; place-items: center;
+  background: rgba(255, 255, 255, 0.04);
+  border: 1px solid rgba(255, 255, 255, 0.06);
+  border-radius: 5px;
+  color: #00d4ff;
+  font-size: 12px;
+  flex-shrink: 0;
+}
+.cmdk-row.active .cmdk-icon {
+  background: rgba(255, 106, 0, 0.16);
+  border-color: rgba(255, 106, 0, 0.38);
+  color: #ff6a00;
+}
+.cmdk-text {
+  flex: 1; min-width: 0;
+  display: flex; flex-direction: column; gap: 1px;
+}
+.cmdk-label {
+  font-weight: 600;
+  color: #f5f5f5;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.cmdk-sub {
+  font-size: 11px;
+  color: #8a8a95;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.cmdk-hint {
+  font-family: 'JetBrains Mono', monospace;
+  font-size: 10px;
+  color: #6a6a75;
+  background: rgba(255, 255, 255, 0.04);
+  padding: 2px 6px;
+  border-radius: 4px;
+  letter-spacing: 0.04em;
+}
+
+.cmdk-empty {
+  padding: 24px 16px; text-align: center;
+  color: #8a8a95; font-size: 13px;
+}
+.cmdk-empty kbd {
+  background: rgba(255, 255, 255, 0.06);
+  padding: 1px 5px; border-radius: 4px;
+  font-family: 'JetBrains Mono', monospace;
+  color: #c9d1d9; margin: 0 2px;
+}
+
+/* Footer */
+.cmdk-footer {
+  display: flex;
+  gap: 16px;
+  padding: 10px 16px;
+  border-top: 1px solid rgba(255, 255, 255, 0.06);
+  background: rgba(0, 0, 0, 0.25);
+  font-size: 10px;
+  color: #6a6a75;
+}
+.cmdk-footer kbd {
+  background: rgba(255, 255, 255, 0.06);
+  border: 1px solid rgba(255, 255, 255, 0.08);
+  border-radius: 4px;
+  padding: 1px 5px;
+  font-family: 'JetBrains Mono', monospace;
+  font-size: 9px;
+  color: #c9d1d9;
+}
+.cmdk-footer .cmdk-brand {
+  margin-left: auto;
+  color: #ff6a00;
+  font-family: 'JetBrains Mono', monospace;
+  letter-spacing: 0.1em;
+}
+
+/* Hotkey overlay (the ? cheatsheet) */
+.cmdk-hk-backdrop {
+  position: fixed; inset: 0; z-index: 195;
+  background: rgba(0, 0, 0, 0.55);
+  backdrop-filter: blur(10px) saturate(140%);
+  display: grid; place-items: center; padding: 24px;
+  opacity: 0; transition: opacity 0.08s linear;
+}
+.cmdk-hk-backdrop[hidden] { display: none; }
+.cmdk-hk-backdrop.cmdk-visible { opacity: 1; }
+
+.cmdk-hk-modal {
+  width: min(720px, 100%);
+  max-height: 85vh; overflow-y: auto;
+  background: linear-gradient(180deg, #11111a 0%, #0a0a13 100%);
+  border: 1px solid rgba(0, 212, 255, 0.28);
+  border-radius: 14px;
+  padding: 0 0 14px;
+  box-shadow:
+    0 30px 80px rgba(0, 0, 0, 0.6),
+    0 0 60px rgba(0, 212, 255, 0.16);
+}
+.cmdk-hk-modal header {
+  display: flex; justify-content: space-between; align-items: center;
+  padding: 16px 20px;
+  border-bottom: 1px solid rgba(255, 255, 255, 0.06);
+}
+.cmdk-hk-modal h2 {
+  margin: 0;
+  font-size: 16px;
+  color: #f5f5f5;
+  font-weight: 700;
+  letter-spacing: 0.02em;
+}
+.cmdk-hk-modal section { padding: 14px 20px 6px; }
+.cmdk-hk-modal h3 {
+  margin: 0 0 10px;
+  font-size: 10px;
+  color: #ff6a00;
+  text-transform: uppercase;
+  letter-spacing: 0.18em;
+  font-family: 'JetBrains Mono', monospace;
+}
+.cmdk-hk-modal dl {
+  margin: 0;
+  display: grid;
+  grid-template-columns: minmax(160px, max-content) 1fr;
+  row-gap: 8px;
+  column-gap: 16px;
+  font-size: 13px;
+}
+.cmdk-hk-modal dt {
+  color: #c9d1d9;
+  display: flex; gap: 4px; align-items: center;
+}
+.cmdk-hk-modal dd {
+  margin: 0; color: #8a8a95;
+  align-self: center;
+}
+.cmdk-hk-modal kbd {
+  background: rgba(255, 255, 255, 0.06);
+  border: 1px solid rgba(255, 255, 255, 0.08);
+  border-radius: 5px;
+  padding: 2px 6px;
+  font-family: 'JetBrains Mono', monospace;
+  font-size: 10px;
+  color: #f5f5f5;
+}
+.cmdk-hk-modal footer {
+  text-align: center;
+  padding: 12px 16px 4px;
+  font-size: 11px;
+  color: #6a6a75;
+}
+.cmdk-hk-modal footer kbd {
+  background: rgba(255, 106, 0, 0.16);
+  border-color: rgba(255, 106, 0, 0.32);
+  color: #ff6a00;
+}
+
+/* Mobile adapt — full-screen sheet from the bottom */
+@media (max-width: 720px) {
+  .cmdk-backdrop { padding: 0; }
+  .cmdk-modal {
+    border-radius: 14px 14px 0 0;
+    border-bottom: 0;
+    align-self: end;
+    height: 92vh;
+    width: 100%;
+    transform: translateY(8px);
+  }
+  .cmdk-list { max-height: calc(92vh - 120px); }
+  .cmdk-input { font-size: 16px; /* prevent iOS zoom */ }
+  .cmdk-hk-modal {
+    border-radius: 14px 14px 0 0;
+    align-self: end;
+    width: 100%;
+    max-height: 92vh;
+  }
+}
+
+/* ============================================================
+ * Density modes — apply via body[data-density]
+ * Wired here because the palette adds them; main app.css picks
+ * up the CSS variables and adjusts row heights, padding, fonts.
+ * ============================================================ */
+body[data-density="cozy"]    { --cl-density-row: 1; --cl-density-pad: 1; --cl-density-fs: 1; }
+body[data-density="compact"] { --cl-density-row: 0.78; --cl-density-pad: 0.65; --cl-density-fs: 0.92; }
+body[data-density="dense"]   { --cl-density-row: 0.6; --cl-density-pad: 0.45; --cl-density-fs: 0.86; }
+
+body[data-density="compact"] .holdings-table th,
+body[data-density="compact"] .holdings-table td { padding: 7px 9px; font-size: 12px; }
+body[data-density="dense"]   .holdings-table th,
+body[data-density="dense"]   .holdings-table td { padding: 4px 7px; font-size: 11px; }
+body[data-density="dense"]   .holdings-table th { font-size: 9px; letter-spacing: 0.08em; }
+body[data-density="compact"] .glass-card { padding: 14px 16px; }
+body[data-density="dense"]   .glass-card { padding: 10px 12px; }
+body[data-density="compact"] .hero-card  { padding: 14px 16px; }
+body[data-density="dense"]   .hero-card  { padding: 10px 12px; }
+body[data-density="compact"] .hero-value { font-size: 22px; }
+body[data-density="dense"]   .hero-value { font-size: 18px; }
+
+/* ============================================================
+ * Skeleton loaders — shown until first SSE snapshot arrives.
+ * Sit inside hero cards, allocation, holdings, and signal bars.
+ * The .skeleton class gets removed by JS once data is ready.
+ * ============================================================ */
+.skeleton-line, .skeleton-block {
+  background: linear-gradient(90deg,
+    rgba(255, 255, 255, 0.04) 0%,
+    rgba(255, 106, 0, 0.10) 50%,
+    rgba(255, 255, 255, 0.04) 100%);
+  background-size: 200% 100%;
+  animation: skeletonShimmer 1.4s ease-in-out infinite;
+  border-radius: 6px;
+  display: inline-block;
+}
+.skeleton-line  { height: 14px; width: 60%; }
+.skeleton-block { height: 14px; width: 100%; }
+@keyframes skeletonShimmer {
+  0%   { background-position: 100% 0; }
+  100% { background-position: -100% 0; }
+}
+.is-loaded .skeleton-line, .is-loaded .skeleton-block { display: none; }
