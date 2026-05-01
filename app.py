@@ -2168,6 +2168,275 @@ def news(symbol: str):
 
 
 # ---------------------------------------------------------------------------
+# AI copilot — Claude Haiku (Anthropic) integration
+# Wave 7 said LLM-as-research-copilot is the only AI bucket worth shipping.
+# This is that.  User brings their own Anthropic API key (sk-ant-...).
+# Falls back to a helpful canned response when no key is configured (so the
+# UI works in demo mode and users can see what they're paying for first).
+# ---------------------------------------------------------------------------
+
+_AI_CONFIG_FILE = os.path.join(os.path.dirname(_default_db_path()), "ai-config.json")
+_AI_MODEL = "claude-haiku-4-5"  # cheap, fast, smart enough for trading-copilot work
+_AI_MAX_TOKENS = 700            # keep responses tight per Wave 7 rules
+
+
+def _ai_load_config() -> dict:
+    try:
+        with open(_AI_CONFIG_FILE, "r") as f:
+            return json.load(f)
+    except (FileNotFoundError, json.JSONDecodeError):
+        return {}
+
+
+def _ai_save_config(cfg: dict) -> None:
+    try:
+        os.makedirs(os.path.dirname(_AI_CONFIG_FILE), exist_ok=True)
+        with open(_AI_CONFIG_FILE, "w") as f:
+            json.dump(cfg, f, indent=2)
+    except OSError as exc:
+        app.logger.warning("ai config save failed: %s", exc)
+
+
+def _ai_system_prompt(snapshot: dict | None, chart_symbol: str | None,
+                      mode: str = "swing") -> str:
+    """Build the system prompt with current portfolio context inlined."""
+    parts = [
+        "You are ChurnLence's trading copilot. You help a swing/memecoin crypto",
+        "trader understand their portfolio, signals, and indicators.",
+        "",
+        "HARD RULES — never violate these:",
+        "- Never predict prices.  Don't say 'X will go to $Y'.",
+        "- Never tell the user what to trade.  They make the decisions.",
+        "- Never make up numbers.  If you don't have data, say so.",
+        "- Keep responses SHORT — 3-5 sentences max unless explicitly asked for more.",
+        "- Use plain English.  Define jargon (e.g., 'MACD = momentum indicator').",
+        "- When citing a number, name the source ('Per the Overkill EMA signal: ...').",
+        "",
+        "WHAT YOU SHOULD DO:",
+        "- Explain WHY a signal fired ('EMA 9 crossed above EMA 21 + RVOL 2.3x = momentum confirmation')",
+        "- Summarise a coin from the live data ('SOL is up 3% today, RSI 56 (neutral), MACD positive')",
+        "- Explain indicators ('MACD histogram above zero = bullish momentum')",
+        "- Draft a trade-journal entry from numbers",
+        "- Help the user navigate ChurnLence (tabs, hotkeys, features)",
+        "",
+        "WHAT YOU SHOULD REFUSE:",
+        "- 'Should I buy ZBCN?' → 'I can't tell you what to trade.  Here's what the data shows...'",
+        "- 'What will BTC do tomorrow?' → 'I can't predict prices.  Here's the current setup...'",
+        "- 'Pick me a coin to buy' → 'I can summarise what's currently flagged BUY in your watchlist...'",
+        "",
+        "TRADING MODE: " + mode.upper() +
+        (" (始解 Shikai = swing, daily candles, 9/21/50/200 EMAs, slow/high-conviction)"
+         if mode == "swing" else
+         " (卍解 Bankai = day trade, 15-min candles, 9/21/50 EMAs, tighter stops)"),
+        "",
+    ]
+    if snapshot and snapshot.get("rows"):
+        parts.append("CURRENT PORTFOLIO (live, refreshed on every message):")
+        t = snapshot.get("totals") or {}
+        parts.append(f"  Total value: ${t.get('value', 0):,.2f}  ·  "
+                     f"Day P/L: ${t.get('day_pl', 0):,.2f}  ·  "
+                     f"Total P/L: ${t.get('pl', 0):,.2f} ({t.get('pl_pct', 0):.2f}%)")
+        parts.append("  Holdings:")
+        for r in snapshot["rows"]:
+            if r.get("error"):
+                continue
+            line = (
+                f"    {r['symbol']:<10} {r.get('shares', 0):>10.4f} sh  "
+                f"@ ${r.get('price', 0):>10.4f}  "
+                f"P/L ${r.get('pl', 0):>+9,.2f} ({r.get('pl_pct', 0):>+6.2f}%)  "
+                f"signal={r.get('signal', 'HOLD')}"
+            )
+            extras = []
+            if r.get("rsi") is not None:
+                extras.append(f"RSI {r['rsi']:.0f}")
+            if r.get("macd_hist") is not None:
+                extras.append(f"MACD {'+' if r['macd_hist'] >= 0 else ''}{r['macd_hist']:.2f}")
+            if r.get("rvol") is not None:
+                extras.append(f"VOL {r['rvol']:.1f}x")
+            if r.get("stop_atr") is not None:
+                extras.append(f"stop ${r['stop_atr']:.4f}")
+            if extras:
+                line += "  [" + " · ".join(extras) + "]"
+            parts.append(line)
+        parts.append("")
+        c = snapshot.get("concentration") or {}
+        if c.get("hhi"):
+            parts.append(f"  Concentration HHI: {c['hhi']} ({c.get('grade', '—')})")
+            parts.append("")
+    if chart_symbol:
+        parts.append(f"CURRENTLY VIEWED CHART: {chart_symbol}")
+        parts.append("")
+    parts.append("ChurnLence has these tabs (Cmd-K to jump): Overview, Holdings, "
+                 "Charts, Signals, Watchlist, Planner, Backtest, Scanner.")
+    parts.append("Indicators on every quote: EMA 9/21/50/200, RSI(14), ATR(14), "
+                 "RVOL (volume vs 20-bar avg), MACD(12,26,9), Bollinger Bands(20,2σ).")
+    return "\n".join(parts)
+
+
+def _ai_demo_reply(message: str, snapshot: dict | None) -> str:
+    """Plausible canned response when no API key is set — so the chat UI can
+    be exercised in demo mode without spending money."""
+    msg = message.lower()
+    if "why" in msg and "buy" in msg:
+        return ("**(Demo response — set your Anthropic key to get real Claude.)** "
+                "When a coin gets a BUY signal in ChurnLence, it usually means: "
+                "(a) the bullish EMA stack (9 > 21 > 50 > 200) is intact, AND "
+                "(b) price is within 1.5% of the 21 EMA, AND (c) RVOL > 1.5× "
+                "(real volume, not chop). The 'reason' field on the signal chip "
+                "tells you which condition triggered.")
+    if "why" in msg and "sell" in msg:
+        return ("**(Demo response — set your Anthropic key for real Claude.)** "
+                "SELL fires either when the EMA stack flips bearish OR when price "
+                "extends >8% above the 21 EMA in swing mode (>5% in BANKAI mode) — "
+                "the 'take profit' case. Hover the SELL chip to see the exact reason.")
+    if "macd" in msg:
+        return ("**(Demo)** MACD = momentum. The histogram (line minus signal) "
+                "tells you the direction: positive and rising = bullish momentum "
+                "accelerating; positive but falling = momentum cooling. The chip "
+                "on the chart tab shows the current value.")
+    if "rsi" in msg:
+        return ("**(Demo)** RSI(14) is a momentum oscillator: > 70 = overbought "
+                "(price has risen too fast), < 30 = oversold. The chip is red on "
+                "overbought, green on oversold, dim on neutral.")
+    if "kelly" in msg:
+        return ("**(Demo)** Kelly = math-optimal position size given your win-rate "
+                "and payoff ratio. Open the Planner tab; ChurnLence reads your "
+                "closed sells from the transactions table and shows full-Kelly + "
+                "half-Kelly bet size in dollars.")
+    if "bankai" in msg or "shikai" in msg or "mode" in msg:
+        return ("**(Demo)** SHIKAI 始解 = swing mode (daily candles, 9/21/50/200 "
+                "EMAs, ATR×2 stops, ~8% take-profit). BANKAI 卍解 = day-trade mode "
+                "(15-min candles, faster signals, tighter ATR×1 stops, ~5% take-"
+                "profit). Toggle in the topbar.")
+    return ("**(Demo response — set your Anthropic API key in Settings to get "
+            "real Claude responses.)** I can explain why a signal fired, summarise "
+            "a coin, walk through any indicator (RSI / MACD / Bollinger / ATR), "
+            "draft a trade-journal entry, or help you navigate ChurnLence. Try "
+            "asking 'why is SOL on BUY?' or 'explain MACD'.")
+
+
+@app.route("/api/ai/config", methods=["GET", "POST"])
+def ai_config():
+    cfg = _ai_load_config()
+    if request.method == "POST":
+        data = request.get_json(force=True, silent=True) or {}
+        if "api_key" in data:
+            key = (data.get("api_key") or "").strip()
+            if key and not key.startswith("sk-ant-") and not key.startswith("sk-"):
+                return jsonify({"error": "Anthropic keys start with 'sk-ant-'; "
+                                         "OpenAI keys start with 'sk-'."}), 400
+            cfg["api_key"] = key or None
+            cfg["provider"] = "openai" if key.startswith("sk-") and not key.startswith("sk-ant-") else "anthropic"
+        if "model" in data and data["model"]:
+            cfg["model"] = data["model"]
+        _ai_save_config(cfg)
+    masked = None
+    if cfg.get("api_key"):
+        k = cfg["api_key"]
+        masked = k[:11] + "…" + k[-4:]
+    return jsonify({
+        "configured":     bool(cfg.get("api_key")),
+        "provider":       cfg.get("provider", "anthropic"),
+        "model":          cfg.get("model", _AI_MODEL),
+        "key_preview":    masked,
+        "config_path":    _AI_CONFIG_FILE,
+    })
+
+
+def _call_anthropic(api_key: str, system: str, messages: list[dict], model: str) -> str:
+    """POST to Anthropic's /v1/messages.  Returns assistant text or raises."""
+    body = json.dumps({
+        "model": model,
+        "max_tokens": _AI_MAX_TOKENS,
+        "system": system,
+        "messages": messages,
+    }).encode()
+    req = urllib.request.Request(
+        "https://api.anthropic.com/v1/messages",
+        data=body, method="POST",
+        headers={
+            "Content-Type": "application/json",
+            "x-api-key": api_key,
+            "anthropic-version": "2023-06-01",
+            "User-Agent": "ChurnLence/1.0",
+        },
+    )
+    with urllib.request.urlopen(req, timeout=30) as resp:
+        payload = json.loads(resp.read())
+    blocks = payload.get("content") or []
+    return "".join(b.get("text", "") for b in blocks if b.get("type") == "text")
+
+
+def _call_openai(api_key: str, system: str, messages: list[dict], model: str) -> str:
+    body = json.dumps({
+        "model": model or "gpt-4o-mini",
+        "max_tokens": _AI_MAX_TOKENS,
+        "messages": [{"role": "system", "content": system}] + messages,
+    }).encode()
+    req = urllib.request.Request(
+        "https://api.openai.com/v1/chat/completions",
+        data=body, method="POST",
+        headers={
+            "Content-Type": "application/json",
+            "Authorization": f"Bearer {api_key}",
+            "User-Agent": "ChurnLence/1.0",
+        },
+    )
+    with urllib.request.urlopen(req, timeout=30) as resp:
+        payload = json.loads(resp.read())
+    return (payload.get("choices") or [{}])[0].get("message", {}).get("content", "")
+
+
+@app.route("/api/ai/chat", methods=["POST"])
+def ai_chat():
+    data = request.get_json(force=True, silent=True) or {}
+    user_msg = (data.get("message") or "").strip()
+    history = data.get("history") or []
+    chart_symbol = data.get("chart_symbol")
+    portfolio_id = data.get("portfolio_id") or 1
+    mode = (data.get("mode") or "swing").lower()
+    if not user_msg:
+        return jsonify({"error": "message required"}), 400
+
+    snap = _portfolio_snapshot(int(portfolio_id), mode=mode)
+    system = _ai_system_prompt(snap if not snap.get("error") else None,
+                               chart_symbol, mode)
+    cfg = _ai_load_config()
+    api_key = cfg.get("api_key")
+
+    if not api_key:
+        # Demo mode — canned helpful response, no network call
+        return jsonify({
+            "reply":     _ai_demo_reply(user_msg, snap),
+            "model":     "demo",
+            "configured": False,
+        })
+
+    # Build the conversation messages array (history + this turn)
+    messages = []
+    for h in history[-12:]:  # cap context to last 12 turns
+        role = h.get("role")
+        content = h.get("content", "")
+        if role in ("user", "assistant") and content:
+            messages.append({"role": role, "content": content})
+    messages.append({"role": "user", "content": user_msg})
+
+    provider = cfg.get("provider", "anthropic")
+    model = cfg.get("model") or (_AI_MODEL if provider == "anthropic" else "gpt-4o-mini")
+    try:
+        if provider == "openai":
+            reply = _call_openai(api_key, system, messages, model)
+        else:
+            reply = _call_anthropic(api_key, system, messages, model)
+        return jsonify({"reply": reply, "model": model, "configured": True})
+    except urllib.error.HTTPError as exc:
+        body_txt = exc.read().decode("utf-8", errors="ignore")[:400]
+        return jsonify({"error": f"API error {exc.code}: {body_txt}"}), 502
+    except Exception as exc:
+        return jsonify({"error": f"AI call failed: {exc}"}), 502
+
+
+# ---------------------------------------------------------------------------
 # WhaleAlert — large on-chain transfers (opt-in, requires API key)
 # ---------------------------------------------------------------------------
 

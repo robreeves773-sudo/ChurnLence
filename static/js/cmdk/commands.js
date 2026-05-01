@@ -110,6 +110,12 @@
       { id: 'act:alerts', label: 'Email & Discord alerts', sub: 'Configure notifications',
         cat: 'Actions', icon: '◉', keywords: 'alert notify email discord',
         run: function () { api.openAlerts(); } },
+      { id: 'act:ai', label: 'Ask AI Copilot', sub: 'Claude Haiku — explain signals, summarise coins, draft journal',
+        cat: 'Actions', icon: '⚡', hint: 'Ctrl+J', keywords: 'ai chat copilot claude llm assistant ask help',
+        run: function () { if (window.AICopilot) window.AICopilot.open(); } },
+      { id: 'act:ai:settings', label: 'AI Copilot · API key', sub: 'Add or update your Anthropic / OpenAI key',
+        cat: 'Settings', icon: '⚙', keywords: 'ai key api anthropic openai claude config settings',
+        run: function () { if (window.AICopilot) window.AICopilot.openSettings(); } },
     ];
   }
 

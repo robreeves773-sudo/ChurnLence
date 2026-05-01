@@ -2176,10 +2176,22 @@
     });
   }
 
+  // ---------- AI Copilot wiring --------------------------------------------
+  function initAICopilot() {
+    if (!window.AICopilot) return;
+    window.AICopilot.init({
+      snapshot:    () => state.snapshot,
+      chartSymbol: () => state.chartSymbol,
+      portfolioId: () => state.currentPortfolioId,
+      mode:        () => state.mode,
+    });
+  }
+
   // ---------- boot -----------------------------------------------------------
   async function boot() {
     bind();
     initCommandPalette();
+    initAICopilot();
     registerServiceWorker();
     wireInstallPrompt();
     try {
