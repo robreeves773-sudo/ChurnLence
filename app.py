@@ -288,6 +288,61 @@ CREATE TABLE IF NOT EXISTS alert_prefs (
     discord_enabled INTEGER NOT NULL DEFAULT 0,
     updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
 );
+
+-- Per-coin custom thesis: user-defined BUY/SELL rules layered on top of the
+-- default Overkill signal.  Rules are a tiny whitelisted DSL — see
+-- _evaluate_rule() in app.py.
+CREATE TABLE IF NOT EXISTS coin_theses (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    portfolio_id INTEGER NOT NULL REFERENCES portfolios(id) ON DELETE CASCADE,
+    symbol TEXT NOT NULL,
+    name TEXT NOT NULL,
+    buy_rules  TEXT NOT NULL DEFAULT '[]',  -- JSON: [{logic, conds:[{indicator,op,value}]}]
+    sell_rules TEXT NOT NULL DEFAULT '[]',
+    notes TEXT DEFAULT '',
+    enabled INTEGER NOT NULL DEFAULT 1,
+    last_fired_signal TEXT,
+    last_fired_at TEXT,
+    created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+);
+CREATE INDEX IF NOT EXISTS idx_theses_pid_sym ON coin_theses(portfolio_id, symbol);
+
+-- Server-side watchlist (canonical).  Used by the signal-watcher loop so
+-- alerts fire even for coins the user doesn't own.  Frontend keeps a
+-- localStorage mirror for offline fallback.
+CREATE TABLE IF NOT EXISTS watchlist (
+    portfolio_id INTEGER NOT NULL REFERENCES portfolios(id) ON DELETE CASCADE,
+    symbol TEXT NOT NULL,
+    added_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    PRIMARY KEY (portfolio_id, symbol)
+);
+
+-- Symbol alert rules: price threshold, % move, volume spike, signal flip.
+-- Evaluated each tick of _signal_watcher_loop; debounced by last_fired_at.
+CREATE TABLE IF NOT EXISTS alert_rules (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    portfolio_id INTEGER NOT NULL REFERENCES portfolios(id) ON DELETE CASCADE,
+    symbol TEXT NOT NULL,
+    kind TEXT NOT NULL,        -- price_above|price_below|pct_move_24h|volume_spike|signal_flip
+    params TEXT NOT NULL,      -- JSON: {"value":150} or {"pct":-15} or {"threshold":3.0}
+    enabled INTEGER NOT NULL DEFAULT 1,
+    last_fired_at TEXT,
+    created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+);
+CREATE INDEX IF NOT EXISTS idx_alert_rules_pid_sym ON alert_rules(portfolio_id, symbol);
+
+-- Jarvis memory: preferences, facts and conversation summaries injected into
+-- the system prompt so the agent remembers the user across sessions.
+CREATE TABLE IF NOT EXISTS jarvis_memory (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    portfolio_id INTEGER NOT NULL REFERENCES portfolios(id) ON DELETE CASCADE,
+    kind TEXT NOT NULL,        -- preference|fact|summary
+    key TEXT,
+    value TEXT NOT NULL,
+    created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+);
+CREATE INDEX IF NOT EXISTS idx_jarvis_mem_pid_kind ON jarvis_memory(portfolio_id, kind);
 """
 
 
@@ -562,6 +617,156 @@ def _overkill_signal(
     if stack_bear:
         return "HOLD", "Bearish stack — avoid new longs"
     return "HOLD", "Mixed EMAs — no clean setup"
+
+
+# ---------------------------------------------------------------------------
+# Custom thesis DSL — per-coin BUY/SELL rules layered on top of Overkill
+# ---------------------------------------------------------------------------
+
+# Whitelist enforced on every POST and at evaluation time — never `eval`.
+_THESIS_INDICATORS = {
+    "price", "rsi", "ema9", "ema21", "ema50", "ema200",
+    "macd", "macd_signal", "macd_hist",
+    "atr", "atr_pct", "rvol",
+    "pct_24h", "price_vs_ema21",
+    "bb_upper", "bb_mid", "bb_lower", "bb_pct", "bb_width",
+}
+_THESIS_OPS = {"lt", "gt", "lte", "gte", "eq",
+               "crosses_above", "crosses_below"}
+
+
+def _indicator_value(name: str, q) -> float | None:
+    """Resolve an indicator name to a Quote field (with derived fallbacks)."""
+    if name == "pct_24h":
+        return q.change_pct
+    if name == "price_vs_ema21":
+        if q.ema21 and q.price:
+            return (q.price - q.ema21) / q.ema21 * 100.0
+        return None
+    return getattr(q, name, None)
+
+
+def _evaluate_cond(cond: dict, q, prev_q) -> bool:
+    ind = cond.get("indicator")
+    op  = cond.get("op")
+    try:
+        target = float(cond.get("value"))
+    except (TypeError, ValueError):
+        return False
+    if ind not in _THESIS_INDICATORS or op not in _THESIS_OPS:
+        return False
+    cur = _indicator_value(ind, q)
+    if cur is None:
+        return False
+    if op == "lt":  return cur <  target
+    if op == "gt":  return cur >  target
+    if op == "lte": return cur <= target
+    if op == "gte": return cur >= target
+    if op == "eq":  return abs(cur - target) < 1e-9
+    # cross conditions need the previous snapshot
+    if prev_q is None:
+        return False
+    prev = _indicator_value(ind, prev_q)
+    if prev is None:
+        return False
+    if op == "crosses_above": return prev <= target and cur > target
+    if op == "crosses_below": return prev >= target and cur < target
+    return False
+
+
+def _evaluate_rule_group(group: dict, q, prev_q) -> bool:
+    """A rule group = {logic: AND|OR, conds: [...]}.  Fires when the logic
+    fold over its conditions is true."""
+    if not isinstance(group, dict):
+        return False
+    conds = group.get("conds") or []
+    if not conds:
+        return False
+    logic = (group.get("logic") or "AND").upper()
+    results = [_evaluate_cond(c, q, prev_q) for c in conds if isinstance(c, dict)]
+    if not results:
+        return False
+    return all(results) if logic == "AND" else any(results)
+
+
+def _evaluate_thesis(row: dict, q, prev_q) -> tuple[str, str] | None:
+    """Returns ('BUY', name) or ('SELL', name) on a hit; None otherwise.
+    BUY checked before SELL — a thesis shouldn't fire both at once."""
+    try:
+        buys  = json.loads(row.get("buy_rules")  or "[]") or []
+        sells = json.loads(row.get("sell_rules") or "[]") or []
+    except json.JSONDecodeError:
+        return None
+    name = row.get("name") or "thesis"
+    for grp in buys:
+        if _evaluate_rule_group(grp, q, prev_q):
+            return "BUY", name
+    for grp in sells:
+        if _evaluate_rule_group(grp, q, prev_q):
+            return "SELL", name
+    return None
+
+
+def _validate_thesis_rules(rules) -> str | None:
+    """Reject anything outside the whitelist BEFORE storing.  Returns an error
+    string on failure, None on success."""
+    if not isinstance(rules, list):
+        return "rules must be a JSON array"
+    for i, grp in enumerate(rules):
+        if not isinstance(grp, dict):
+            return f"rule #{i+1} must be an object"
+        logic = (grp.get("logic") or "AND").upper()
+        if logic not in ("AND", "OR"):
+            return f"rule #{i+1}: logic must be AND or OR"
+        conds = grp.get("conds")
+        if not isinstance(conds, list) or not conds:
+            return f"rule #{i+1}: conds must be a non-empty array"
+        for j, c in enumerate(conds):
+            if not isinstance(c, dict):
+                return f"rule #{i+1} cond #{j+1} must be an object"
+            if c.get("indicator") not in _THESIS_INDICATORS:
+                return f"rule #{i+1} cond #{j+1}: unknown indicator '{c.get('indicator')}'"
+            if c.get("op") not in _THESIS_OPS:
+                return f"rule #{i+1} cond #{j+1}: unknown op '{c.get('op')}'"
+            try:
+                float(c.get("value"))
+            except (TypeError, ValueError):
+                return f"rule #{i+1} cond #{j+1}: value must be a number"
+    return None
+
+
+def _load_theses(db, pid: int, symbol: str | None = None) -> list[dict]:
+    if symbol:
+        rows = db.execute(
+            "SELECT id, symbol, name, buy_rules, sell_rules, notes, enabled, "
+            "last_fired_signal, last_fired_at, created_at, updated_at "
+            "FROM coin_theses WHERE portfolio_id = ? AND symbol = ? "
+            "ORDER BY id DESC",
+            (pid, symbol),
+        ).fetchall()
+    else:
+        rows = db.execute(
+            "SELECT id, symbol, name, buy_rules, sell_rules, notes, enabled, "
+            "last_fired_signal, last_fired_at, created_at, updated_at "
+            "FROM coin_theses WHERE portfolio_id = ? ORDER BY symbol, id DESC",
+            (pid,),
+        ).fetchall()
+    out = []
+    for r in rows:
+        d = dict(r)
+        try:
+            d["buy_rules"]  = json.loads(d.get("buy_rules")  or "[]")
+            d["sell_rules"] = json.loads(d.get("sell_rules") or "[]")
+        except json.JSONDecodeError:
+            d["buy_rules"], d["sell_rules"] = [], []
+        d["enabled"] = bool(d.get("enabled"))
+        out.append(d)
+    return out
+
+
+# Module-level cache: lets _signal_watcher_loop see the previous Quote so
+# `crosses_above/below` conditions can compare last-tick vs this-tick.
+_prev_quotes: dict[str, "Quote"] = {}
 
 
 def _demo_history(symbol: str) -> tuple[list[str], list[float], list[float], list[float], list[float], str, str]:
@@ -1066,6 +1271,18 @@ def _portfolio_snapshot(portfolio_id: int, mode: str = "swing") -> dict:
             "SELECT id, symbol, shares, cost_basis, note FROM holdings WHERE portfolio_id = ? ORDER BY symbol",
             (portfolio_id,),
         ).fetchall()
+        # Pull theses once and group by symbol so we can attach to rows.
+        theses_by_sym: dict[str, list[dict]] = {}
+        for t in _load_theses(db, portfolio_id):
+            theses_by_sym.setdefault(t["symbol"], []).append({
+                "id": t["id"], "name": t["name"], "enabled": t["enabled"],
+                "last_fired_signal": t.get("last_fired_signal"),
+            })
+        watch_rows = db.execute(
+            "SELECT symbol FROM watchlist WHERE portfolio_id = ? ORDER BY symbol",
+            (portfolio_id,),
+        ).fetchall()
+        watchlist_syms = [r["symbol"] for r in watch_rows]
 
     rows = []
     total_value = 0.0
@@ -1125,6 +1342,7 @@ def _portfolio_snapshot(portfolio_id: int, mode: str = "swing") -> dict:
             "signal": q.signal,
             "signal_reason": q.signal_reason,
             "note": h["note"],
+            "theses": theses_by_sym.get(q.symbol, []),
         })
 
     concentration = _concentration(rows, total_value)
@@ -1141,6 +1359,7 @@ def _portfolio_snapshot(portfolio_id: int, mode: str = "swing") -> dict:
             "pl_pct": round(total_pl_pct, 3),
             "day_pl": round(total_day_change, 2),
         },
+        "watchlist": watchlist_syms,
         "updated_at": datetime.now(timezone.utc).isoformat(),
     }
 
@@ -1753,6 +1972,272 @@ def alert_prefs(pid: int):
     })
 
 
+# ---------------------------------------------------------------------------
+# Custom thesis endpoints
+# ---------------------------------------------------------------------------
+
+@app.route("/api/portfolios/<int:pid>/theses", methods=["GET", "POST"])
+def theses_route(pid: int):
+    db = get_db()
+    if request.method == "POST":
+        data = request.get_json(force=True, silent=True) or {}
+        sym = (data.get("symbol") or "").strip().upper()
+        if not sym:
+            return jsonify({"error": "symbol is required"}), 400
+        name = (data.get("name") or "").strip() or f"{sym} thesis"
+        buy_rules  = data.get("buy_rules")  or []
+        sell_rules = data.get("sell_rules") or []
+        err = _validate_thesis_rules(buy_rules) or _validate_thesis_rules(sell_rules)
+        if err:
+            return jsonify({"error": err}), 400
+        if not buy_rules and not sell_rules:
+            return jsonify({"error": "add at least one buy or sell rule"}), 400
+        notes = (data.get("notes") or "").strip()
+        enabled = 1 if data.get("enabled", 1) else 0
+        db.execute(
+            "INSERT INTO coin_theses(portfolio_id, symbol, name, buy_rules, sell_rules, "
+            "notes, enabled, created_at, updated_at) "
+            "VALUES (?, ?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)",
+            (pid, sym, name, json.dumps(buy_rules), json.dumps(sell_rules),
+             notes, enabled),
+        )
+        db.commit()
+    return jsonify({"theses": _load_theses(db, pid)})
+
+
+@app.route("/api/portfolios/<int:pid>/theses/<int:tid>",
+           methods=["PATCH", "DELETE"])
+def thesis_detail(pid: int, tid: int):
+    db = get_db()
+    if request.method == "DELETE":
+        db.execute("DELETE FROM coin_theses WHERE id = ? AND portfolio_id = ?",
+                   (tid, pid))
+        db.commit()
+        return jsonify({"ok": True})
+    data = request.get_json(force=True, silent=True) or {}
+    fields, values = [], []
+    if "name" in data:
+        fields.append("name = ?")
+        values.append((data.get("name") or "").strip() or "thesis")
+    if "buy_rules" in data:
+        rules = data.get("buy_rules") or []
+        err = _validate_thesis_rules(rules)
+        if err: return jsonify({"error": err}), 400
+        fields.append("buy_rules = ?")
+        values.append(json.dumps(rules))
+    if "sell_rules" in data:
+        rules = data.get("sell_rules") or []
+        err = _validate_thesis_rules(rules)
+        if err: return jsonify({"error": err}), 400
+        fields.append("sell_rules = ?")
+        values.append(json.dumps(rules))
+    if "notes" in data:
+        fields.append("notes = ?")
+        values.append((data.get("notes") or "").strip())
+    if "enabled" in data:
+        fields.append("enabled = ?")
+        values.append(1 if data.get("enabled") else 0)
+    if not fields:
+        return jsonify({"error": "no fields to update"}), 400
+    fields.append("updated_at = CURRENT_TIMESTAMP")
+    values.extend([tid, pid])
+    db.execute(f"UPDATE coin_theses SET {', '.join(fields)} "
+               "WHERE id = ? AND portfolio_id = ?", values)
+    db.commit()
+    return jsonify({"theses": _load_theses(db, pid)})
+
+
+# ---------------------------------------------------------------------------
+# Server-side watchlist endpoints
+# ---------------------------------------------------------------------------
+
+@app.route("/api/portfolios/<int:pid>/watchlist", methods=["GET", "POST"])
+def watchlist_route(pid: int):
+    db = get_db()
+    if request.method == "POST":
+        data = request.get_json(force=True, silent=True) or {}
+        sym = (data.get("symbol") or "").strip().upper()
+        if not sym:
+            return jsonify({"error": "symbol is required"}), 400
+        # Validate the ticker actually has data — same as add-holding flow
+        q = fetch_quote(sym)
+        if q is None:
+            return jsonify({"error": f"no market data found for {sym}"}), 400
+        db.execute(
+            "INSERT OR IGNORE INTO watchlist(portfolio_id, symbol, added_at) "
+            "VALUES (?, ?, CURRENT_TIMESTAMP)",
+            (pid, sym),
+        )
+        db.commit()
+    rows = db.execute(
+        "SELECT symbol, added_at FROM watchlist WHERE portfolio_id = ? ORDER BY symbol",
+        (pid,),
+    ).fetchall()
+    return jsonify({"watchlist": [{"symbol": r["symbol"], "added_at": r["added_at"]}
+                                  for r in rows]})
+
+
+@app.route("/api/portfolios/<int:pid>/watchlist/<symbol>", methods=["DELETE"])
+def watchlist_delete(pid: int, symbol: str):
+    db = get_db()
+    db.execute("DELETE FROM watchlist WHERE portfolio_id = ? AND symbol = ?",
+               (pid, symbol.upper()))
+    # Also nuke any alert rules for that symbol — they'd be orphans otherwise
+    db.execute("DELETE FROM alert_rules WHERE portfolio_id = ? AND symbol = ?",
+               (pid, symbol.upper()))
+    db.commit()
+    return jsonify({"ok": True})
+
+
+# ---------------------------------------------------------------------------
+# Alert rule endpoints — price/movement/volume alerts for any symbol
+# ---------------------------------------------------------------------------
+
+_ALERT_KINDS = {"price_above", "price_below", "pct_move_24h",
+                "volume_spike", "signal_flip"}
+
+
+def _validate_alert_rule(kind: str, params: dict) -> str | None:
+    if kind not in _ALERT_KINDS:
+        return f"unknown alert kind '{kind}'"
+    if not isinstance(params, dict):
+        return "params must be an object"
+    if kind in ("price_above", "price_below"):
+        try:
+            float(params.get("value"))
+        except (TypeError, ValueError):
+            return "params.value must be a number"
+    elif kind == "pct_move_24h":
+        try:
+            float(params.get("pct"))
+        except (TypeError, ValueError):
+            return "params.pct must be a number (e.g. -15 for -15%)"
+    elif kind == "volume_spike":
+        try:
+            float(params.get("threshold"))
+        except (TypeError, ValueError):
+            return "params.threshold must be a number (e.g. 3 for 3× avg vol)"
+    # signal_flip needs no params
+    return None
+
+
+def _load_alert_rules(db, pid: int) -> list[dict]:
+    rows = db.execute(
+        "SELECT id, symbol, kind, params, enabled, last_fired_at, created_at "
+        "FROM alert_rules WHERE portfolio_id = ? ORDER BY symbol, id",
+        (pid,),
+    ).fetchall()
+    out = []
+    for r in rows:
+        d = dict(r)
+        try: d["params"] = json.loads(d["params"] or "{}")
+        except json.JSONDecodeError: d["params"] = {}
+        d["enabled"] = bool(d["enabled"])
+        out.append(d)
+    return out
+
+
+@app.route("/api/portfolios/<int:pid>/alert-rules", methods=["GET", "POST"])
+def alert_rules_route(pid: int):
+    db = get_db()
+    if request.method == "POST":
+        data = request.get_json(force=True, silent=True) or {}
+        sym = (data.get("symbol") or "").strip().upper()
+        kind = (data.get("kind") or "").strip()
+        params = data.get("params") or {}
+        if not sym:
+            return jsonify({"error": "symbol is required"}), 400
+        err = _validate_alert_rule(kind, params)
+        if err:
+            return jsonify({"error": err}), 400
+        enabled = 1 if data.get("enabled", 1) else 0
+        db.execute(
+            "INSERT INTO alert_rules(portfolio_id, symbol, kind, params, enabled, "
+            "created_at) VALUES (?, ?, ?, ?, ?, CURRENT_TIMESTAMP)",
+            (pid, sym, kind, json.dumps(params), enabled),
+        )
+        db.commit()
+    return jsonify({"rules": _load_alert_rules(db, pid)})
+
+
+@app.route("/api/portfolios/<int:pid>/alert-rules/<int:rid>",
+           methods=["PATCH", "DELETE"])
+def alert_rule_detail(pid: int, rid: int):
+    db = get_db()
+    if request.method == "DELETE":
+        db.execute("DELETE FROM alert_rules WHERE id = ? AND portfolio_id = ?",
+                   (rid, pid))
+        db.commit()
+        return jsonify({"ok": True})
+    data = request.get_json(force=True, silent=True) or {}
+    fields, values = [], []
+    if "enabled" in data:
+        fields.append("enabled = ?")
+        values.append(1 if data.get("enabled") else 0)
+    if "params" in data:
+        # Need the rule's kind to validate
+        row = db.execute("SELECT kind FROM alert_rules WHERE id = ? AND portfolio_id = ?",
+                         (rid, pid)).fetchone()
+        if not row:
+            return jsonify({"error": "rule not found"}), 404
+        err = _validate_alert_rule(row["kind"], data.get("params") or {})
+        if err: return jsonify({"error": err}), 400
+        fields.append("params = ?")
+        values.append(json.dumps(data.get("params") or {}))
+    if not fields:
+        return jsonify({"error": "no fields to update"}), 400
+    values.extend([rid, pid])
+    db.execute(f"UPDATE alert_rules SET {', '.join(fields)} "
+               "WHERE id = ? AND portfolio_id = ?", values)
+    db.commit()
+    return jsonify({"rules": _load_alert_rules(db, pid)})
+
+
+# ---------------------------------------------------------------------------
+# Jarvis memory endpoints — what the AI agent remembers about the user
+# ---------------------------------------------------------------------------
+
+_JARVIS_KINDS = {"preference", "fact", "summary"}
+
+
+@app.route("/api/portfolios/<int:pid>/jarvis/memory", methods=["GET", "POST"])
+def jarvis_memory(pid: int):
+    db = get_db()
+    if request.method == "POST":
+        data = request.get_json(force=True, silent=True) or {}
+        kind = (data.get("kind") or "fact").strip()
+        value = (data.get("value") or "").strip()
+        key = (data.get("key") or "").strip() or None
+        if kind not in _JARVIS_KINDS:
+            return jsonify({"error": f"kind must be one of {sorted(_JARVIS_KINDS)}"}), 400
+        if not value:
+            return jsonify({"error": "value is required"}), 400
+        # Cap value length so the prompt stays small
+        if len(value) > 400:
+            return jsonify({"error": "memory entry too long (max 400 chars)"}), 400
+        db.execute(
+            "INSERT INTO jarvis_memory(portfolio_id, kind, key, value, created_at) "
+            "VALUES (?, ?, ?, ?, CURRENT_TIMESTAMP)",
+            (pid, kind, key, value),
+        )
+        db.commit()
+    rows = db.execute(
+        "SELECT id, kind, key, value, created_at FROM jarvis_memory "
+        "WHERE portfolio_id = ? ORDER BY created_at DESC LIMIT 200",
+        (pid,),
+    ).fetchall()
+    return jsonify({"memory": [dict(r) for r in rows]})
+
+
+@app.route("/api/portfolios/<int:pid>/jarvis/memory/<int:mid>", methods=["DELETE"])
+def jarvis_memory_delete(pid: int, mid: int):
+    db = get_db()
+    db.execute("DELETE FROM jarvis_memory WHERE id = ? AND portfolio_id = ?",
+               (mid, pid))
+    db.commit()
+    return jsonify({"ok": True})
+
+
 @app.route("/api/portfolios/<int:pid>/discord/test", methods=["POST"])
 def discord_test(pid: int):
     """Fire a test message to the saved Discord webhook so the user knows it works."""
@@ -2197,8 +2682,35 @@ def _ai_save_config(cfg: dict) -> None:
         app.logger.warning("ai config save failed: %s", exc)
 
 
+_JARVIS_TOOLS_BLOCK = """
+TOOLS YOU CAN PROPOSE (Jarvis agent mode):
+You may emit at most three tool-call blocks per reply, on their own lines, using
+this EXACT syntax — the client parses them and runs the action:
+
+  [[ACTION:name|<json args>]]
+
+Available actions:
+  add_to_watchlist     {"symbol":"SOL-USD"}
+  remove_from_watchlist{"symbol":"SOL-USD"}
+  open_chart           {"symbol":"BTC-USD"}
+  set_tab              {"tab":"holdings"}              tabs: overview|holdings|charts|signals|watchlist|planner|backtest|scanner
+  set_mode             {"mode":"day"}                  modes: swing|day
+  create_alert_rule    {"symbol":"DOGE-USD","kind":"price_above","params":{"value":0.50}}
+  refresh              {}
+  summarize_holdings   {}
+  confirm              {"action":"sell","args":{...},"why":"…"}   propose a destructive action; user must click Run
+
+RULES:
+- Destructive intents (sell, delete) MUST use `confirm` first.  Never emit a
+  raw `sell` / `delete_*` action.
+- After the action block, briefly explain in plain English what you did and why.
+- Skip the action block if the user is just chatting or asking a question — only
+  emit tool calls when they explicitly ask for something to happen.
+"""
+
+
 def _ai_system_prompt(snapshot: dict | None, chart_symbol: str | None,
-                      mode: str = "swing") -> str:
+                      mode: str = "swing", memory: list[dict] | None = None) -> str:
     """Build the system prompt with current portfolio context inlined."""
     parts = [
         "You are ChurnLence's trading copilot. You help a swing/memecoin crypto",
@@ -2270,6 +2782,15 @@ def _ai_system_prompt(snapshot: dict | None, chart_symbol: str | None,
                  "Charts, Signals, Watchlist, Planner, Backtest, Scanner.")
     parts.append("Indicators on every quote: EMA 9/21/50/200, RSI(14), ATR(14), "
                  "RVOL (volume vs 20-bar avg), MACD(12,26,9), Bollinger Bands(20,2σ).")
+    if memory:
+        parts.append("")
+        parts.append("WHAT YOU REMEMBER ABOUT THIS USER:")
+        for m in memory[:20]:
+            kind = m.get("kind", "fact")
+            val = (m.get("value") or "").strip()
+            if val:
+                parts.append(f"  [{kind}] {val}")
+    parts.append(_JARVIS_TOOLS_BLOCK)
     return "\n".join(parts)
 
 
@@ -2399,8 +2920,22 @@ def ai_chat():
         return jsonify({"error": "message required"}), 400
 
     snap = _portfolio_snapshot(int(portfolio_id), mode=mode)
+    # Load up to 20 most-recent memory rows (preference + fact, plus summaries)
+    # so Jarvis remembers the user across sessions.
+    memory: list[dict] = []
+    try:
+        with direct_db() as mdb:
+            rows = mdb.execute(
+                "SELECT kind, key, value FROM jarvis_memory "
+                "WHERE portfolio_id = ? AND kind IN ('preference','fact','summary') "
+                "ORDER BY created_at DESC LIMIT 20",
+                (int(portfolio_id),),
+            ).fetchall()
+            memory = [dict(r) for r in rows]
+    except Exception as exc:
+        app.logger.warning("jarvis memory load failed: %s", exc)
     system = _ai_system_prompt(snap if not snap.get("error") else None,
-                               chart_symbol, mode)
+                               chart_symbol, mode, memory=memory)
     cfg = _ai_load_config()
     api_key = cfg.get("api_key")
 
@@ -2710,6 +3245,59 @@ def _send_alert_email(to: str, symbol: str, from_sig: str | None, to_sig: str,
         app.logger.warning("email alert failed: %s", exc)
 
 
+_THESIS_COOLDOWN_SEC = 30 * 60   # 30 min between same-signal re-fires
+_RULE_COOLDOWN_SEC   = 4 * 3600  # 4 h between same-rule re-fires
+
+
+def _fire_alert(db, pid: int, sym: str, from_sig: str | None, to_sig: str,
+                price: float, reason: str,
+                email: str | None, email_on: int,
+                discord_webhook: str | None, discord_on: int) -> None:
+    """Insert a signal_events row + dispatch email/Discord per portfolio prefs.
+    Used by both the default Overkill watcher and the new thesis/rule watchers
+    so delivery stays uniform."""
+    db.execute(
+        "INSERT INTO signal_events(portfolio_id, symbol, from_signal, "
+        "to_signal, price, reason) VALUES (?, ?, ?, ?, ?, ?)",
+        (pid, sym, from_sig, to_sig, price, reason),
+    )
+    db.commit()
+    if email_on and email:
+        _send_alert_email(email, sym, from_sig, to_sig, price, reason)
+    if discord_on and discord_webhook:
+        _send_discord_alert(discord_webhook, sym, from_sig, to_sig, price, reason)
+
+
+def _evaluate_alert_rule(rule: dict, q, prev_to: str | None) -> tuple[bool, str]:
+    """Returns (fired, reason).  Caller handles cooldown + delivery."""
+    kind = rule.get("kind")
+    params = rule.get("params") or {}
+    if kind == "price_above":
+        v = float(params.get("value"))
+        if q.price > v:
+            return True, f"Price ${q.price:,.6g} crossed above ${v:,.6g}"
+    elif kind == "price_below":
+        v = float(params.get("value"))
+        if q.price < v:
+            return True, f"Price ${q.price:,.6g} dropped below ${v:,.6g}"
+    elif kind == "pct_move_24h":
+        pct = float(params.get("pct"))
+        cur = q.change_pct or 0.0
+        # Positive threshold = "alert when up at least X%"; negative = "down at least |X|%".
+        if pct >= 0 and cur >= pct:
+            return True, f"24h move {cur:+.2f}% met +{pct}% threshold"
+        if pct < 0 and cur <= pct:
+            return True, f"24h move {cur:+.2f}% met {pct}% threshold"
+    elif kind == "volume_spike":
+        thr = float(params.get("threshold"))
+        if (q.rvol or 0) >= thr:
+            return True, f"Relative volume {q.rvol:.2f}× ≥ {thr}× avg"
+    elif kind == "signal_flip":
+        if prev_to and prev_to != q.signal:
+            return True, f"Signal flipped {prev_to} → {q.signal}: {q.signal_reason}"
+    return False, ""
+
+
 def _signal_watcher_loop():
     while True:
         try:
@@ -2725,36 +3313,116 @@ def _signal_watcher_loop():
                 today_str = now.strftime("%Y-%m-%d")
                 for p in portfolios:
                     pid = p["id"]
-                    # --- per-transition signal alerts ---
+                    email_on    = p["enabled"] or 0
+                    discord_on  = p["discord_enabled"] or 0
+                    email       = p["email"]
+                    discord_url = p["discord_webhook"]
+
+                    # Gather holdings ∪ watchlist symbols (dedupe to limit
+                    # yfinance hits) — watchlist is the new bit.
                     holds = db.execute(
                         "SELECT DISTINCT symbol FROM holdings WHERE portfolio_id = ?",
                         (pid,),
                     ).fetchall()
-                    for h in holds:
-                        sym = h["symbol"]
+                    watches = db.execute(
+                        "SELECT DISTINCT symbol FROM watchlist WHERE portfolio_id = ?",
+                        (pid,),
+                    ).fetchall()
+                    all_syms = {h["symbol"] for h in holds} | {w["symbol"] for w in watches}
+
+                    # Cache theses & rules once per loop to avoid N queries
+                    theses = _load_theses(db, pid)
+                    theses_by_sym: dict[str, list[dict]] = {}
+                    for t in theses:
+                        if t.get("enabled"):
+                            theses_by_sym.setdefault(t["symbol"], []).append(t)
+                    rules = _load_alert_rules(db, pid)
+                    rules_by_sym: dict[str, list[dict]] = {}
+                    for r in rules:
+                        if r.get("enabled"):
+                            rules_by_sym.setdefault(r["symbol"], []).append(r)
+
+                    for sym in sorted(all_syms):
                         q = fetch_quote(sym)
                         if q is None:
                             continue
+                        prev_q = _prev_quotes.get(sym)
                         key = (pid, sym)
-                        prev = _last_signals.get(key)
-                        if prev is None:
-                            _last_signals[key] = q.signal
-                            continue
-                        if prev == q.signal:
-                            continue
-                        db.execute(
-                            "INSERT INTO signal_events(portfolio_id, symbol, from_signal, "
-                            "to_signal, price, reason) VALUES (?, ?, ?, ?, ?, ?)",
-                            (pid, sym, prev, q.signal, q.price, q.signal_reason),
-                        )
-                        db.commit()
-                        if p["enabled"] and p["email"]:
-                            _send_alert_email(p["email"], sym, prev, q.signal,
-                                              q.price, q.signal_reason)
-                        if p["discord_enabled"] and p["discord_webhook"]:
-                            _send_discord_alert(p["discord_webhook"], sym, prev, q.signal,
-                                                q.price, q.signal_reason)
-                        _last_signals[key] = q.signal
+                        prev_to = _last_signals.get(key)
+
+                        # --- default Overkill per-transition alert ---
+                        # Only fires if user actually holds the symbol (watchlist-
+                        # only symbols get the same alert via signal_flip rule).
+                        is_holding = any(h["symbol"] == sym for h in holds)
+                        if is_holding:
+                            if prev_to is None:
+                                _last_signals[key] = q.signal
+                            elif prev_to != q.signal:
+                                _fire_alert(db, pid, sym, prev_to, q.signal,
+                                            q.price, q.signal_reason,
+                                            email, email_on, discord_url, discord_on)
+                                _last_signals[key] = q.signal
+
+                        # --- custom thesis evaluation ---
+                        for t in theses_by_sym.get(sym, []):
+                            hit = _evaluate_thesis(t, q, prev_q)
+                            if not hit:
+                                continue
+                            new_sig, name = hit
+                            # Debounce: skip if same signal recently fired
+                            last_sig = t.get("last_fired_signal")
+                            last_at  = t.get("last_fired_at")
+                            if last_sig == new_sig and last_at:
+                                try:
+                                    dt = datetime.fromisoformat(last_at.replace(" ", "T"))
+                                    if dt.tzinfo is None:
+                                        dt = dt.replace(tzinfo=timezone.utc)
+                                    if (now - dt).total_seconds() < _THESIS_COOLDOWN_SEC:
+                                        continue
+                                except ValueError:
+                                    pass
+                            reason = f"Thesis: {name} → {new_sig}"
+                            _fire_alert(db, pid, sym, last_sig, new_sig,
+                                        q.price, reason,
+                                        email, email_on, discord_url, discord_on)
+                            db.execute(
+                                "UPDATE coin_theses SET last_fired_signal = ?, "
+                                "last_fired_at = ? WHERE id = ?",
+                                (new_sig, now.isoformat(), t["id"]),
+                            )
+                            db.commit()
+                            # Update in-memory copy so next-symbol iteration
+                            # sees the new debounce state.
+                            t["last_fired_signal"] = new_sig
+                            t["last_fired_at"]     = now.isoformat()
+
+                        # --- generic alert rules (price/movement/volume/flip) ---
+                        for r in rules_by_sym.get(sym, []):
+                            fired, reason = _evaluate_alert_rule(r, q, prev_to)
+                            if not fired:
+                                continue
+                            last_at = r.get("last_fired_at")
+                            if last_at:
+                                try:
+                                    dt = datetime.fromisoformat(last_at.replace(" ", "T"))
+                                    if dt.tzinfo is None:
+                                        dt = dt.replace(tzinfo=timezone.utc)
+                                    if (now - dt).total_seconds() < _RULE_COOLDOWN_SEC:
+                                        continue
+                                except ValueError:
+                                    pass
+                            tag = f"Alert ({r['kind']}): {reason}"
+                            _fire_alert(db, pid, sym, None, q.signal,
+                                        q.price, tag,
+                                        email, email_on, discord_url, discord_on)
+                            db.execute(
+                                "UPDATE alert_rules SET last_fired_at = ? WHERE id = ?",
+                                (now.isoformat(), r["id"]),
+                            )
+                            db.commit()
+                            r["last_fired_at"] = now.isoformat()
+
+                        _prev_quotes[sym] = q
 
                     # --- daily digest (fire once per UTC day at the chosen hour) ---
                     if (p["daily_digest"] and p["email"] and SMTP_HOST and SMTP_USER and SMTP_PASS

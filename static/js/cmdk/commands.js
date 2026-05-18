@@ -113,6 +113,32 @@
       { id: 'act:ai', label: 'Ask AI Copilot', sub: 'Claude Haiku — explain signals, summarise coins, draft journal',
         cat: 'Actions', icon: '⚡', hint: 'Ctrl+J', keywords: 'ai chat copilot claude llm assistant ask help',
         run: function () { if (window.AICopilot) window.AICopilot.open(); } },
+      { id: 'act:thesis', label: '> thesis <ticker>', sub: 'Open custom buy/sell rules for a coin',
+        cat: 'Actions', icon: '📋', keywords: 'thesis rule custom plan idea',
+        prefix: '>thesis', run: function (args) {
+          var sym = (args && args.parts[0] || '').toUpperCase();
+          if (!sym) return api.toast('Usage: >thesis SOL', 'info');
+          if (sym.indexOf('-') < 0) sym += '-USD';
+          if (window.churnlence && window.churnlence.openThesisModal) {
+            window.churnlence.openThesisModal(sym);
+          }
+        } },
+      { id: 'act:alerts:symbol', label: '> alerts <ticker>', sub: 'Open price / movement alert rules for a coin',
+        cat: 'Actions', icon: '🔔', keywords: 'alerts notify rule price move',
+        prefix: '>alerts', run: function (args) {
+          var sym = (args && args.parts[0] || '').toUpperCase();
+          if (!sym) return api.toast('Usage: >alerts SOL', 'info');
+          if (sym.indexOf('-') < 0) sym += '-USD';
+          if (window.churnlence && window.churnlence.openAlertRulesModal) {
+            window.churnlence.openAlertRulesModal(sym);
+          }
+        } },
+      { id: 'act:jarvis', label: '> jarvis <message>', sub: 'Talk to Jarvis (voice-enabled AI agent)',
+        cat: 'Actions', icon: '🤖', keywords: 'jarvis ai voice agent ask talk',
+        prefix: '>jarvis', run: function (args) {
+          var msg = (args && args.tail) || '';
+          if (window.AICopilot) window.AICopilot.open(msg);
+        } },
       { id: 'act:ai:settings', label: 'AI Copilot · API key', sub: 'Add or update your Anthropic / OpenAI key',
         cat: 'Settings', icon: '⚙', keywords: 'ai key api anthropic openai claude config settings',
         run: function () { if (window.AICopilot) window.AICopilot.openSettings(); } },

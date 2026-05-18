@@ -408,6 +408,51 @@ select:focus, input:focus {
 .watch-tile .wt-sig { position: absolute; top: 12px; right: 12px; }
 .watch-tile .wt-del { position: absolute; bottom: 10px; right: 10px; opacity: 0; transition: opacity .15s ease; }
 .watch-tile:hover .wt-del { opacity: 1; }
+.watch-tile .wt-bell { position: absolute; bottom: 10px; right: 38px; opacity: 0; transition: opacity .15s ease; }
+.watch-tile:hover .wt-bell { opacity: 1; }
+
+/* Custom-thesis chip — appears next to the BUY/SELL/HOLD chip when a
+   user-defined rule is active for the row.  Subtle gold to read as "yours". */
+.thesis-chip {
+  display: inline-block; margin-left: 6px;
+  padding: 2px 7px; border-radius: 8px;
+  font-family: 'JetBrains Mono', monospace; font-size: 10px; font-weight: 700;
+  color: #ffd56b;
+  background: rgba(255, 213, 107, 0.08);
+  border: 1px solid rgba(255, 213, 107, 0.35);
+  box-shadow: 0 0 8px rgba(255, 213, 107, 0.18);
+  vertical-align: middle;
+}
+
+/* Thesis modal — declarative rule builder */
+.thesis-group {
+  border: 1px solid var(--line); border-radius: 8px;
+  padding: 10px 12px; margin: 8px 0;
+  background: rgba(255,255,255,0.02);
+}
+.thesis-group-head { display: flex; align-items: center; justify-content: space-between; margin-bottom: 8px; }
+.thesis-group-head strong { font-size: 13px; color: var(--ink); }
+.thesis-logic select { background: rgba(0,0,0,0.3); }
+.thesis-conds { display: flex; flex-direction: column; gap: 6px; margin-bottom: 8px; }
+.thesis-cond {
+  display: grid; grid-template-columns: 2fr 1.4fr 1fr auto; gap: 6px; align-items: center;
+}
+.thesis-cond select, .thesis-cond input { padding: 6px 8px; font-size: 12px; }
+.thesis-cond .t-del { padding: 4px 8px; }
+.t-add-cond { font-size: 12px; }
+
+/* Alert-rule rows in the per-symbol rules modal */
+.rule-row {
+  display: grid; grid-template-columns: 1.5fr 1fr auto auto; gap: 8px;
+  align-items: center; padding: 6px 8px; font-size: 12px;
+  border-bottom: 1px solid rgba(255,255,255,0.05);
+}
+.rule-row:last-child { border-bottom: 0; }
+.rule-kind { font-family: 'JetBrains Mono', monospace; color: var(--ink); }
+.rule-kind.off { color: var(--ink-mute); text-decoration: line-through; }
+.rule-last { font-size: 11px; color: var(--ink-mute); }
+
+.row-thesis { font-size: 12px; padding: 4px 8px; }
 
 /* footer */
 .footer {

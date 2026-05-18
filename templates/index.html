@@ -367,11 +367,19 @@
     <section class="panel" data-panel="watchlist">
       <div class="holdings-head">
         <h2>Watchlist</h2>
-        <form class="watch-form" id="watch-form">
-          <input type="text" id="watch-input" placeholder="Symbol (e.g. NVDA, BTC-USD)" />
-          <button type="submit" class="primary-btn">Watch</button>
-        </form>
+        <div style="display:flex; align-items:center; gap:10px; flex-wrap:wrap;">
+          <button type="button" class="primary-btn" id="watch-add-coin-btn"
+                  title="Focus the symbol input">+ Add coin</button>
+          <form class="watch-form" id="watch-form">
+            <input type="text" id="watch-input" placeholder="Symbol (e.g. NVDA, BTC-USD)" />
+            <button type="submit" class="primary-btn">Watch</button>
+          </form>
+        </div>
       </div>
+      <p class="card-sub" style="margin: -6px 0 12px; color: var(--ink-mute);">
+        Click the 🔔 on any tile to add price / movement / volume alerts —
+        they fire even when the tab is closed.
+      </p>
       <div class="glass-card watch-grid" id="watch-grid">
         <div class="empty-row">Add a symbol to start watching.</div>
       </div>

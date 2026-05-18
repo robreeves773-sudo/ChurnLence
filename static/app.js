@@ -256,6 +256,18 @@
     // First snapshot in — kill skeleton loaders
     document.body.classList.add('is-loaded');
     detectSignalTransitions(snap.rows || []);
+    // Server-canonical watchlist takes precedence — it's what the background
+    // signal-watcher sees, so the UI must reflect it.  localStorage stays as
+    // an offline fallback only.
+    if (Array.isArray(snap.watchlist)) {
+      const next = snap.watchlist.slice();
+      const cur = state.watchlist || [];
+      if (next.length !== cur.length || next.some((s, i) => s !== cur[i])) {
+        state.watchlist = next;
+        saveJSON('churnlence.watchlist', state.watchlist);
+        safeCall('watchlist', () => refreshWatchlist());
+      }
+    }
 
     const rowsHash = fingerprintRows(snap.rows);
     const totalsHash = JSON.stringify(snap.totals || {});
@@ -307,6 +319,10 @@
         } else if (r.signal === 'SELL') {
           Sound.alert();
           Notify.fire(`${r.symbol}  →  SELL`, `${r.signal_reason}\n${fmtMoneySm(r.price)}`, `sig-${r.symbol}`);
+        }
+        // Proactive Jarvis insight (throttled to 1/10min in the copilot)
+        if (window.AICopilot && typeof window.AICopilot.pushProactive === 'function') {
+          window.AICopilot.pushProactive(`${r.symbol} flipped ${prev} → ${r.signal}: ${r.signal_reason}`);
         }
       }
       state.prevSignals[r.symbol] = r.signal;
@@ -394,7 +410,12 @@
     // update only the cells whose values changed.  Avoids tearing down +
     // rebinding all the click handlers + repainting the whole table on
     // every price tick.
-    const structureSig = rows.map(r => `${r.id}:${r.symbol}`).join('|');
+    // Include thesis-active state so adding/removing a thesis triggers a
+    // full rebuild (the "T" chip is rendered in the slow path only).
+    const structureSig = rows.map(r => {
+      const tFlag = (r.theses && r.theses.some(t => t.enabled)) ? 'T' : 'N';
+      return `${r.id}:${r.symbol}:${tFlag}`;
+    }).join('|');
     if (tbody._structureSig === structureSig && tbody.children.length === rows.length) {
       for (const r of rows) {
         const tr = tbody.querySelector(`tr[data-sym="${r.symbol}"][data-id="${r.id}"]`);
@@ -450,11 +471,17 @@
           <td class="num">${fmtMoney(r.value)}</td>
           <td class="num ${plUp ? 'up' : 'down'}">${fmtMoney(r.pl)}</td>
           <td class="num ${plUp ? 'up' : 'down'}">${fmtPct(r.pl_pct)}</td>
-          <td><span class="sig-chip ${(r.signal||'hold').toLowerCase()}" title="${escapeHtml(r.signal_reason||'')}">${r.signal || 'HOLD'}</span></td>
+          <td>
+            <span class="sig-chip ${(r.signal||'hold').toLowerCase()}" title="${escapeHtml(r.signal_reason||'')}">${r.signal || 'HOLD'}</span>
+            ${(r.theses && r.theses.some(t => t.enabled))
+              ? `<span class="thesis-chip" title="Custom thesis active: ${escapeHtml((r.theses.filter(t=>t.enabled).map(t=>t.name)).join(', '))}">T</span>`
+              : ''}
+          </td>
           <td class="num">${r.stop_loss != null ? fmtMoneySm(r.stop_loss) : '—'}</td>
           <td class="num">${r.stop_atr != null ? fmtMoneySm(r.stop_atr) : '—'}</td>
           <td class="num">${r.atr_pct != null ? fmtPct(r.atr_pct) : '—'}</td>
           <td class="num row-actions">
+            <button class="row-act row-thesis" data-thesis="${r.symbol}" title="Custom thesis">📋</button>
             <button class="row-act row-sell" data-sell="${r.symbol}" title="Sell / close position">Sell</button>
             <button class="row-del" data-del="${r.id}" title="Remove (no tax record)">✕</button>
           </td>
@@ -532,6 +559,14 @@
         e.stopPropagation();
         Sound.click();
         openSellModal(btn.dataset.sell);
+      });
+    });
+
+    // thesis handlers
+    $$('.row-thesis', tbody).forEach(btn => {
+      btn.addEventListener('click', (e) => {
+        e.stopPropagation();
+        openThesisModal(btn.dataset.thesis);
       });
     });
 
@@ -1183,6 +1218,76 @@
   }
 
   // ---------- watchlist ------------------------------------------------------
+  // Server-backed add/remove.  Writes through to /api/portfolios/:id/watchlist
+  // so the background signal-watcher can see the symbol.  Falls back to local-
+  // storage if the request fails (offline mode).
+  async function addToWatchlist(sym) {
+    sym = String(sym || '').trim().toUpperCase();
+    if (!sym) return;
+    if (state.watchlist.includes(sym)) {
+      toast(`${sym} already on watchlist`, 'info');
+      return;
+    }
+    if (!state.currentPortfolioId) {
+      // No portfolio yet — local-only fallback
+      state.watchlist.push(sym);
+      saveJSON('churnlence.watchlist', state.watchlist);
+      refreshWatchlist();
+      return;
+    }
+    try {
+      const r = await api(`/api/portfolios/${state.currentPortfolioId}/watchlist`,
+        { method: 'POST', body: JSON.stringify({ symbol: sym }) });
+      state.watchlist = (r.watchlist || []).map(w => w.symbol);
+      saveJSON('churnlence.watchlist', state.watchlist);
+      refreshWatchlist();
+      toast(`${sym} added to watchlist`, 'success');
+      Sound.ding();
+    } catch (err) {
+      toast(err.message, 'error');
+    }
+  }
+
+  async function removeFromWatchlist(sym) {
+    sym = String(sym || '').trim().toUpperCase();
+    if (!sym) return;
+    if (state.currentPortfolioId) {
+      try {
+        await api(`/api/portfolios/${state.currentPortfolioId}/watchlist/${encodeURIComponent(sym)}`,
+                  { method: 'DELETE' });
+      } catch (err) { /* keep local change anyway */ }
+    }
+    state.watchlist = state.watchlist.filter(s => s !== sym);
+    delete state.watchData[sym];
+    saveJSON('churnlence.watchlist', state.watchlist);
+    Sound.click();
+    refreshWatchlist();
+  }
+
+  // One-time migration: if the localStorage watchlist has symbols the server
+  // doesn't yet know about, POST them.  Idempotent on the server (INSERT OR IGNORE).
+  async function migrateWatchlistToServer() {
+    if (!state.currentPortfolioId) return;
+    try {
+      const r = await api(`/api/portfolios/${state.currentPortfolioId}/watchlist`);
+      const server = new Set((r.watchlist || []).map(w => w.symbol));
+      const local = state.watchlist || [];
+      const missing = local.filter(s => !server.has(s));
+      for (const sym of missing) {
+        try {
+          await api(`/api/portfolios/${state.currentPortfolioId}/watchlist`,
+            { method: 'POST', body: JSON.stringify({ symbol: sym }) });
+        } catch { /* skip invalid */ }
+      }
+      // Re-read from server so state is canonical
+      const r2 = await api(`/api/portfolios/${state.currentPortfolioId}/watchlist`);
+      state.watchlist = (r2.watchlist || []).map(w => w.symbol);
+      saveJSON('churnlence.watchlist', state.watchlist);
+    } catch (err) {
+      console.warn('watchlist migration failed:', err);
+    }
+  }
+
   async function refreshWatchlist() {
     const grid = $('#watch-grid');
     if (!state.watchlist.length) {
@@ -1213,6 +1318,7 @@
           <div class="wt-name">${escapeHtml(q.name || '')}</div>
           <div class="wt-px">${fmtMoneySm(q.price)}</div>
           <div class="wt-chg ${cls}">${arrow} ${fmtPct(chg)} · EMA21 ${fmtMoneySm(q.ema21)}</div>
+          <button class="icon-btn wt-bell" data-walert="${sym}" title="Price / volume alerts">🔔</button>
           <button class="icon-btn wt-del" data-wdel="${sym}" title="Remove">✕</button>
         </div>`);
     });
@@ -1220,12 +1326,13 @@
     $$('#watch-grid [data-wdel]').forEach(btn => {
       btn.addEventListener('click', (e) => {
         e.stopPropagation();
-        const sym = btn.dataset.wdel;
-        state.watchlist = state.watchlist.filter(s => s !== sym);
-        delete state.watchData[sym];
-        saveJSON('churnlence.watchlist', state.watchlist);
-        Sound.click();
-        refreshWatchlist();
+        removeFromWatchlist(btn.dataset.wdel);
+      });
+    });
+    $$('#watch-grid [data-walert]').forEach(btn => {
+      btn.addEventListener('click', (e) => {
+        e.stopPropagation();
+        openAlertRulesModal(btn.dataset.walert);
       });
     });
     $$('#watch-grid [data-sym]').forEach(tile => {
@@ -1611,17 +1718,18 @@
       e.preventDefault();
       const sym = $('#watch-input').value.trim().toUpperCase();
       if (!sym) return;
-      if (state.watchlist.includes(sym)) { toast(`${sym} already watched`, 'info'); return; }
-      try {
-        await api(withMode(`/api/quote/${encodeURIComponent(sym)}`));
-      } catch { toast(`Symbol ${sym} not found`, 'error'); Sound.alert(); return; }
-      state.watchlist.push(sym);
-      saveJSON('churnlence.watchlist', state.watchlist);
       $('#watch-input').value = '';
-      refreshWatchlist();
-      Sound.ding();
-      toast(`${sym} added to watchlist`, 'success');
+      await addToWatchlist(sym);
     });
+    // "+ Add coin" CTA in the Watchlist tab header — focuses the input
+    const addCoinBtn = $('#watch-add-coin-btn');
+    if (addCoinBtn) {
+      addCoinBtn.addEventListener('click', () => {
+        setTab('watchlist');
+        const inp = $('#watch-input');
+        if (inp) { inp.focus(); inp.select(); }
+      });
+    }
 
     // planner: show/hide fields per stop_method
     const plannerForm = $('#planner-form');
@@ -2073,6 +2181,383 @@
       : 'Enable desktop notifications for BUY/SELL';
   }
 
+  // ---------- Custom thesis modal -------------------------------------------
+  // A small declarative rule builder: indicator + op + value, combined by an
+  // AND/OR logic toggle.  Server validates every rule against the same
+  // whitelist (see _validate_thesis_rules in app.py).
+  const THESIS_INDICATORS = [
+    ['price',           'Price ($)'],
+    ['rsi',             'RSI (0-100)'],
+    ['pct_24h',         '24h change (%)'],
+    ['price_vs_ema21',  'Price vs EMA21 (%)'],
+    ['ema9',            'EMA 9 ($)'],
+    ['ema21',           'EMA 21 ($)'],
+    ['ema50',           'EMA 50 ($)'],
+    ['ema200',          'EMA 200 ($)'],
+    ['macd_hist',       'MACD histogram'],
+    ['rvol',            'Relative volume (×)'],
+    ['atr_pct',         'ATR (%)'],
+    ['bb_pct',          'Bollinger %B (0-1)'],
+  ];
+  const THESIS_OPS = [
+    ['lt',  '<  less than'],
+    ['lte', '≤  at most'],
+    ['gt',  '>  greater than'],
+    ['gte', '≥  at least'],
+    ['crosses_above', '↑ crosses above'],
+    ['crosses_below', '↓ crosses below'],
+    ['eq',  '=  equals'],
+  ];
+
+  function thesisCondRow(c) {
+    c = c || { indicator: 'price', op: 'lt', value: '' };
+    const inds = THESIS_INDICATORS.map(([v, lbl]) =>
+      `<option value="${v}"${v === c.indicator ? ' selected' : ''}>${lbl}</option>`).join('');
+    const ops = THESIS_OPS.map(([v, lbl]) =>
+      `<option value="${v}"${v === c.op ? ' selected' : ''}>${lbl}</option>`).join('');
+    return `
+      <div class="thesis-cond" data-thesis-cond>
+        <select class="t-ind">${inds}</select>
+        <select class="t-op">${ops}</select>
+        <input class="t-val" type="number" step="any" value="${c.value ?? ''}" placeholder="value" />
+        <button type="button" class="icon-btn t-del" title="Remove condition">✕</button>
+      </div>`;
+  }
+
+  function thesisGroupBlock(label, kind, group) {
+    group = group || { logic: 'AND', conds: [{}] };
+    const conds = (group.conds || [{}]).map(thesisCondRow).join('');
+    return `
+      <div class="thesis-group" data-thesis-group data-kind="${kind}">
+        <header class="thesis-group-head">
+          <strong>${label}</strong>
+          <label class="thesis-logic">
+            <select class="t-logic">
+              <option value="AND"${(group.logic||'AND')==='AND'?' selected':''}>ALL of (AND)</option>
+              <option value="OR" ${(group.logic||'AND')==='OR' ?' selected':''}>ANY of (OR)</option>
+            </select>
+          </label>
+        </header>
+        <div class="thesis-conds">${conds}</div>
+        <button type="button" class="ghost-btn t-add-cond">+ Add condition</button>
+      </div>`;
+  }
+
+  function readThesisGroup(groupEl) {
+    const logic = groupEl.querySelector('.t-logic').value;
+    const conds = [...groupEl.querySelectorAll('[data-thesis-cond]')].map(row => ({
+      indicator: row.querySelector('.t-ind').value,
+      op:        row.querySelector('.t-op').value,
+      value:     parseFloat(row.querySelector('.t-val').value),
+    })).filter(c => Number.isFinite(c.value));
+    if (!conds.length) return null;
+    return { logic, conds };
+  }
+
+  let thesisModal = null;
+  function buildThesisModal() {
+    if (thesisModal) return thesisModal;
+    thesisModal = document.createElement('div');
+    thesisModal.className = 'modal-backdrop';
+    thesisModal.id = 'thesis-modal';
+    thesisModal.hidden = true;
+    thesisModal.innerHTML = `
+      <div class="modal glass-card" style="max-width:680px;">
+        <header class="modal-head">
+          <h3>Custom thesis · <span id="thesis-sym">—</span></h3>
+          <button class="icon-btn" data-close>✕</button>
+        </header>
+        <form id="thesis-form" class="form-grid">
+          <label class="full">Thesis name
+            <input name="name" placeholder="e.g. SOL bargain hunt" autocomplete="off" required />
+          </label>
+          <label class="full" style="display:flex; flex-direction:row; align-items:center; gap:10px;">
+            <input name="enabled" type="checkbox" style="width:auto;" checked />
+            <span>Active — evaluate every 5 min and alert on hits</span>
+          </label>
+          <div class="full" id="thesis-buy-host"></div>
+          <div class="full" id="thesis-sell-host"></div>
+          <label class="full">Notes
+            <textarea name="notes" rows="2" placeholder="Why this thesis? Optional, helps future-you."></textarea>
+          </label>
+          <div class="form-error" id="thesis-error"></div>
+          <div class="full" id="thesis-existing" style="font-size:12px; color:var(--ink-mute);"></div>
+          <div class="form-actions">
+            <button type="button" class="ghost-btn" data-close>Cancel</button>
+            <button type="submit" class="primary-btn">Save thesis</button>
+          </div>
+        </form>
+      </div>`;
+    document.body.appendChild(thesisModal);
+    thesisModal.addEventListener('click', (e) => {
+      if (e.target === thesisModal || e.target.closest('[data-close]')) {
+        thesisModal.hidden = true;
+      }
+    });
+    thesisModal.addEventListener('click', (e) => {
+      const addBtn = e.target.closest('.t-add-cond');
+      if (addBtn) {
+        const host = addBtn.previousElementSibling;
+        host.insertAdjacentHTML('beforeend', thesisCondRow());
+      }
+      const delBtn = e.target.closest('.t-del');
+      if (delBtn) {
+        const row = delBtn.closest('[data-thesis-cond]');
+        const host = row.parentElement;
+        row.remove();
+        if (!host.children.length) host.insertAdjacentHTML('beforeend', thesisCondRow());
+      }
+    });
+    thesisModal.querySelector('#thesis-form').addEventListener('submit', async (e) => {
+      e.preventDefault();
+      const f = e.target;
+      const sym = thesisModal.dataset.symbol;
+      const buyEl  = thesisModal.querySelector('[data-kind="buy"]');
+      const sellEl = thesisModal.querySelector('[data-kind="sell"]');
+      const buy = readThesisGroup(buyEl);
+      const sell = readThesisGroup(sellEl);
+      const buys  = buy  ? [buy]  : [];
+      const sells = sell ? [sell] : [];
+      if (!buys.length && !sells.length) {
+        $('#thesis-error').textContent = 'Add at least one buy or sell condition.';
+        return;
+      }
+      const payload = {
+        symbol: sym,
+        name: f.elements.name.value.trim() || `${sym} thesis`,
+        buy_rules:  buys,
+        sell_rules: sells,
+        notes: f.elements.notes.value.trim(),
+        enabled: f.elements.enabled.checked,
+      };
+      $('#thesis-error').textContent = '';
+      try {
+        const url = thesisModal.dataset.editing
+          ? `/api/portfolios/${state.currentPortfolioId}/theses/${thesisModal.dataset.editing}`
+          : `/api/portfolios/${state.currentPortfolioId}/theses`;
+        const method = thesisModal.dataset.editing ? 'PATCH' : 'POST';
+        await api(url, { method, body: JSON.stringify(payload) });
+        toast('Thesis saved', 'success');
+        thesisModal.hidden = true;
+        refreshOnce();
+      } catch (err) {
+        $('#thesis-error').textContent = err.message;
+      }
+    });
+    return thesisModal;
+  }
+
+  async function openThesisModal(symbol) {
+    if (!state.currentPortfolioId) { toast('No portfolio loaded yet', 'error'); return; }
+    symbol = String(symbol || '').toUpperCase();
+    buildThesisModal();
+    thesisModal.dataset.symbol = symbol;
+    thesisModal.dataset.editing = '';
+    $('#thesis-sym').textContent = symbol;
+    const f = $('#thesis-form');
+    f.elements.name.value = '';
+    f.elements.notes.value = '';
+    f.elements.enabled.checked = true;
+    $('#thesis-buy-host').innerHTML  = thesisGroupBlock('BUY when…',  'buy',  null);
+    $('#thesis-sell-host').innerHTML = thesisGroupBlock('SELL when…', 'sell', null);
+    $('#thesis-error').textContent = '';
+    $('#thesis-existing').innerHTML = '';
+    thesisModal.hidden = false;
+
+    // Load any existing theses for this symbol — show first as editable
+    try {
+      const r = await api(`/api/portfolios/${state.currentPortfolioId}/theses`);
+      const mine = (r.theses || []).filter(t => t.symbol === symbol);
+      if (mine.length) {
+        const list = mine.map(t => `
+          <button type="button" class="link-btn" data-load-thesis="${t.id}">
+            ${t.enabled ? '●' : '○'} ${escapeHtml(t.name)} ${t.last_fired_signal ? `· last ${t.last_fired_signal}` : ''}
+          </button>
+          <button type="button" class="link-btn" data-del-thesis="${t.id}" style="color:var(--hollow-red);">delete</button>
+          <br/>`).join('');
+        $('#thesis-existing').innerHTML = `Existing theses for ${symbol}:<br/>${list}`;
+        $$('#thesis-existing [data-load-thesis]').forEach(btn => {
+          btn.addEventListener('click', () => {
+            const t = mine.find(x => String(x.id) === btn.dataset.loadThesis);
+            if (!t) return;
+            thesisModal.dataset.editing = String(t.id);
+            f.elements.name.value = t.name || '';
+            f.elements.notes.value = t.notes || '';
+            f.elements.enabled.checked = !!t.enabled;
+            $('#thesis-buy-host').innerHTML  = thesisGroupBlock('BUY when…',  'buy',
+              (t.buy_rules && t.buy_rules[0])  || null);
+            $('#thesis-sell-host').innerHTML = thesisGroupBlock('SELL when…', 'sell',
+              (t.sell_rules && t.sell_rules[0]) || null);
+          });
+        });
+        $$('#thesis-existing [data-del-thesis]').forEach(btn => {
+          btn.addEventListener('click', async () => {
+            if (!confirm('Delete this thesis?')) return;
+            try {
+              await api(`/api/portfolios/${state.currentPortfolioId}/theses/${btn.dataset.delThesis}`,
+                { method: 'DELETE' });
+              toast('Thesis deleted', 'success');
+              thesisModal.hidden = true;
+              refreshOnce();
+            } catch (err) { toast(err.message, 'error'); }
+          });
+        });
+      }
+    } catch (err) { /* non-fatal */ }
+  }
+
+  // ---------- Alert rules modal (per-symbol price/movement alerts) ----------
+  const ALERT_KINDS = [
+    ['price_above',  'Price rises above',  v => ({ value: parseFloat(v) }),    'value', 'e.g. 0.50'],
+    ['price_below',  'Price falls below',  v => ({ value: parseFloat(v) }),    'value', 'e.g. 0.20'],
+    ['pct_move_24h', '24h move beyond',    v => ({ pct: parseFloat(v) }),      'pct',   'e.g. -15 or 25'],
+    ['volume_spike', 'Volume spike ≥',     v => ({ threshold: parseFloat(v) }),'threshold','e.g. 3 (3× avg)'],
+    ['signal_flip',  'Signal changes',     ()=> ({}),                          null,    ''],
+  ];
+
+  let rulesModal = null;
+  function buildRulesModal() {
+    if (rulesModal) return rulesModal;
+    rulesModal = document.createElement('div');
+    rulesModal.className = 'modal-backdrop';
+    rulesModal.id = 'rules-modal';
+    rulesModal.hidden = true;
+    rulesModal.innerHTML = `
+      <div class="modal glass-card" style="max-width:560px;">
+        <header class="modal-head">
+          <h3>Alert rules · <span id="rules-sym">—</span></h3>
+          <button class="icon-btn" data-close>✕</button>
+        </header>
+        <div class="form-grid">
+          <div class="full" style="color:var(--ink-mute); font-size:13px;">
+            Fire on price, % move, or volume.  Rules check every 5 min server-side
+            (works even with the tab closed).  Email/Discord delivery uses your
+            <em>Email alerts</em> settings.
+          </div>
+          <div class="full" id="rules-list"></div>
+          <hr class="full" style="border:0; border-top:1px solid var(--line);" />
+          <form id="rule-add-form" class="full form-grid" style="grid-template-columns: 1fr 1fr;">
+            <label>Kind
+              <select name="kind">
+                ${ALERT_KINDS.map(([v,lbl]) => `<option value="${v}">${lbl}</option>`).join('')}
+              </select>
+            </label>
+            <label id="rule-val-wrap">Value
+              <input name="value" type="number" step="any" placeholder="" />
+            </label>
+            <div class="form-actions" style="grid-column: span 2;">
+              <button type="button" class="ghost-btn" data-close>Close</button>
+              <button type="submit" class="primary-btn">Add rule</button>
+            </div>
+            <div class="form-error full" id="rule-error"></div>
+          </form>
+        </div>
+      </div>`;
+    document.body.appendChild(rulesModal);
+    rulesModal.addEventListener('click', (e) => {
+      if (e.target === rulesModal || e.target.closest('[data-close]')) {
+        rulesModal.hidden = true;
+      }
+    });
+    const form = rulesModal.querySelector('#rule-add-form');
+    const updateValVisibility = () => {
+      const kind = form.elements.kind.value;
+      const meta = ALERT_KINDS.find(k => k[0] === kind) || [];
+      const wrap = $('#rule-val-wrap');
+      if (!meta[3]) {
+        wrap.style.display = 'none';
+      } else {
+        wrap.style.display = '';
+        wrap.querySelector('input').placeholder = meta[4] || '';
+      }
+    };
+    form.elements.kind.addEventListener('change', updateValVisibility);
+    updateValVisibility();
+    form.addEventListener('submit', async (e) => {
+      e.preventDefault();
+      const kind = form.elements.kind.value;
+      const meta = ALERT_KINDS.find(k => k[0] === kind);
+      const raw = form.elements.value.value;
+      const params = meta[2](raw);
+      const sym = rulesModal.dataset.symbol;
+      $('#rule-error').textContent = '';
+      try {
+        await api(`/api/portfolios/${state.currentPortfolioId}/alert-rules`,
+          { method: 'POST', body: JSON.stringify({ symbol: sym, kind, params }) });
+        form.elements.value.value = '';
+        toast('Alert rule added', 'success');
+        loadRulesList(sym);
+      } catch (err) {
+        $('#rule-error').textContent = err.message;
+      }
+    });
+    return rulesModal;
+  }
+
+  async function loadRulesList(symbol) {
+    const host = $('#rules-list');
+    host.innerHTML = '<div class="empty-row">Loading…</div>';
+    try {
+      const r = await api(`/api/portfolios/${state.currentPortfolioId}/alert-rules`);
+      const mine = (r.rules || []).filter(x => x.symbol === symbol);
+      if (!mine.length) {
+        host.innerHTML = '<div class="empty-row">No alerts yet — add one below.</div>';
+        return;
+      }
+      host.innerHTML = mine.map(rule => {
+        const meta = ALERT_KINDS.find(k => k[0] === rule.kind);
+        const label = meta ? meta[1] : rule.kind;
+        let valTxt = '';
+        if (rule.params.value != null)     valTxt = `$${rule.params.value}`;
+        if (rule.params.pct != null)       valTxt = `${rule.params.pct}%`;
+        if (rule.params.threshold != null) valTxt = `${rule.params.threshold}×`;
+        return `
+          <div class="rule-row">
+            <span class="rule-kind ${rule.enabled ? '' : 'off'}">${label} ${valTxt}</span>
+            <span class="rule-last">${rule.last_fired_at ? 'last fired ' + (rule.last_fired_at.split('T')[0]) : 'idle'}</span>
+            <button class="link-btn" data-rule-toggle="${rule.id}" data-on="${rule.enabled ? 1 : 0}">${rule.enabled ? 'disable' : 'enable'}</button>
+            <button class="link-btn" data-rule-del="${rule.id}" style="color:var(--hollow-red);">delete</button>
+          </div>`;
+      }).join('');
+      $$('[data-rule-toggle]', host).forEach(b => b.addEventListener('click', async () => {
+        const next = b.dataset.on === '1' ? false : true;
+        try {
+          await api(`/api/portfolios/${state.currentPortfolioId}/alert-rules/${b.dataset.ruleToggle}`,
+            { method: 'PATCH', body: JSON.stringify({ enabled: next }) });
+          loadRulesList(symbol);
+        } catch (err) { toast(err.message, 'error'); }
+      }));
+      $$('[data-rule-del]', host).forEach(b => b.addEventListener('click', async () => {
+        if (!confirm('Delete this rule?')) return;
+        try {
+          await api(`/api/portfolios/${state.currentPortfolioId}/alert-rules/${b.dataset.ruleDel}`,
+            { method: 'DELETE' });
+          loadRulesList(symbol);
+        } catch (err) { toast(err.message, 'error'); }
+      }));
+    } catch (err) {
+      host.innerHTML = `<div class="form-error">${escapeHtml(err.message)}</div>`;
+    }
+  }
+
+  function openAlertRulesModal(symbol) {
+    if (!state.currentPortfolioId) { toast('No portfolio loaded yet', 'error'); return; }
+    symbol = String(symbol || '').toUpperCase();
+    buildRulesModal();
+    rulesModal.dataset.symbol = symbol;
+    $('#rules-sym').textContent = symbol;
+    $('#rule-error').textContent = '';
+    rulesModal.hidden = false;
+    loadRulesList(symbol);
+  }
+
+  // Expose for the Jarvis action dispatcher
+  window.churnlence = window.churnlence || {};
+  window.churnlence.openThesisModal = openThesisModal;
+  window.churnlence.openAlertRulesModal = openAlertRulesModal;
+  window.churnlence.addToWatchlist = addToWatchlist;
+  window.churnlence.removeFromWatchlist = removeFromWatchlist;
+
   // ---------- PWA: service worker + install prompt --------------------------
   function registerServiceWorker() {
     if (!('serviceWorker' in navigator)) return;
@@ -2135,17 +2620,7 @@
         if (sel && [...sel.options].some(o => o.value === sym)) sel.value = sym;
         setTab('charts');
       },
-      addToWatchlist:  (sym) => {
-        if (state.watchlist.includes(sym)) {
-          toast(`${sym} already on watchlist`, 'info');
-          return;
-        }
-        state.watchlist.push(sym);
-        saveJSON('churnlence.watchlist', state.watchlist);
-        refreshWatchlist();
-        toast(`${sym} added to watchlist`, 'success');
-        Sound.ding();
-      },
+      addToWatchlist:  (sym) => addToWatchlist(sym),
       openSellModal:   (sym, qty) => {
         if (typeof openSellModal === 'function') {
           openSellModal(sym);
@@ -2184,6 +2659,33 @@
       chartSymbol: () => state.chartSymbol,
       portfolioId: () => state.currentPortfolioId,
       mode:        () => state.mode,
+      // Action handlers — Jarvis emits [[ACTION:name|json]] blocks and the
+      // copilot calls these.  Read-only actions auto-run; destructive ones
+      // require an explicit Run click in the chip.
+      actions: {
+        add_to_watchlist:      ({symbol}) => addToWatchlist(symbol),
+        remove_from_watchlist: ({symbol}) => removeFromWatchlist(symbol),
+        open_chart: ({symbol}) => {
+          if (!symbol) return;
+          state.chartSymbol = String(symbol).toUpperCase();
+          const sel = $('#chart-symbol-select');
+          if (sel) sel.value = state.chartSymbol;
+          setTab('charts');
+        },
+        set_tab:  ({tab})  => { if (tab) setTab(tab); },
+        set_mode: ({mode}) => { if (mode && typeof setMode === 'function') setMode(mode); },
+        refresh:  () => { refreshOnce(); refreshWatchlist(); toast('Refreshed', 'info', 1500); },
+        summarize_holdings: () => setTab('overview'),
+        create_alert_rule: async ({symbol, kind, params}) => {
+          if (!symbol || !kind) return;
+          try {
+            await api(`/api/portfolios/${state.currentPortfolioId}/alert-rules`,
+              { method: 'POST',
+                body: JSON.stringify({ symbol: String(symbol).toUpperCase(), kind, params: params || {} }) });
+            toast(`Alert rule for ${symbol} created`, 'success');
+          } catch (err) { toast(err.message, 'error'); }
+        },
+      },
     });
   }
 
@@ -2197,6 +2699,9 @@
     try {
       await Promise.all([loadPortfolios(), loadPresets()]);
       await refreshOnce();
+      // Server is the canonical watchlist now — push any localStorage-only
+      // symbols up so the background watcher can see them.  Idempotent.
+      await migrateWatchlistToServer();
       openStream();
       refreshWatchlist();
       refreshTransactions();
