@@ -413,6 +413,11 @@
   flex: 1; color: #cfd6e6; font-size: 11px;
   word-break: break-all; min-width: 0;
 }
+.ai-act-label {
+  flex: 1; min-width: 0;
+  color: #cfd6e6; font-size: 12px;
+  cursor: help;
+}
 .ai-action-chip button {
   font-size: 11px; padding: 4px 10px;
   border-radius: 6px; cursor: pointer;

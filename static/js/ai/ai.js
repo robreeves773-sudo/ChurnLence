@@ -301,6 +301,35 @@
     }
   }
 
+  // Translate {name, args} into a plain-English label so the chip reads like
+  // a sentence instead of a JSON dump.  Unknown actions fall back to the raw
+  // function-call form.
+  function prettyAction(action) {
+    var a = action.args || {};
+    var sym = a.symbol || a.ticker || '';
+    switch (action.name) {
+      case 'add_to_watchlist':      return 'Add ' + sym + ' to your watchlist';
+      case 'remove_from_watchlist': return 'Remove ' + sym + ' from your watchlist';
+      case 'open_chart':            return 'Open ' + sym + ' chart';
+      case 'set_tab':               return 'Jump to "' + (a.tab || '?') + '" tab';
+      case 'set_mode':              return 'Switch to ' + String(a.mode || '').toUpperCase() + ' mode';
+      case 'refresh':               return 'Refresh portfolio data';
+      case 'summarize_holdings':    return 'Show portfolio overview';
+      case 'create_alert_rule': {
+        var p = a.params || {};
+        var v = p.value != null ? '$' + p.value
+              : p.pct != null   ? p.pct + '%'
+              : p.threshold != null ? p.threshold + '×'
+              : '';
+        return 'Alert on ' + sym + ' (' + (a.kind || '?') + (v ? ' @ ' + v : '') + ')';
+      }
+      case 'confirm':
+        return 'Confirm: ' + (a.action || 'action') + (a.why ? ' — ' + a.why : '');
+      default:
+        return action.name + '(' + JSON.stringify(a) + ')';
+    }
+  }
+
   function renderActionChips(actions) {
     if (!dom) return;
     var bubble = document.createElement('div');
@@ -314,10 +343,14 @@
       var destructive = DESTRUCTIVE_ACTIONS[action.name];
       var chip = document.createElement('div');
       chip.className = 'ai-action-chip' + (destructive ? ' destructive' : '');
-      var pretty = action.name + '(' + JSON.stringify(action.args || {}) + ')';
+      var label = prettyAction(action);
+      var rawForm = action.name + '(' + JSON.stringify(action.args || {}) + ')';
       chip.innerHTML =
-        '<code>' + escapeHtml(pretty) + '</code>' +
-        '<button type="button" class="ai-act-run">Run</button>' +
+        '<span class="ai-act-label" title="' + escapeHtml(rawForm) + '">' +
+        escapeHtml(label) + '</span>' +
+        '<button type="button" class="ai-act-run">' +
+        (destructive ? 'Run · ' + (safe ? '' : '⚠') : (safe ? 'Run' : 'Run')) +
+        '</button>' +
         '<button type="button" class="ai-act-skip">Skip</button>' +
         '<span class="ai-act-status"></span>';
       listEl.appendChild(chip);

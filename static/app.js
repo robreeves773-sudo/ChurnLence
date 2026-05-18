@@ -129,6 +129,7 @@
     if (name === 'charts')  renderDetailChart();
     if (name === 'scanner') refreshScanner();   // auto-load on first visit
     if (name === 'planner') refreshKelly();     // auto-recompute on tab open
+    if (name === 'signals') refreshThesesRules();
   }
   function moveTabUnderline() {
     const active = $('.tab.active');
@@ -1382,6 +1383,89 @@
     } catch (err) { /* non-fatal */ }
   }
 
+  // Pulls active theses + alert rules and renders a compact summary on the
+  // Signals tab — the user gets a single place to glance "what custom rules
+  // do I have wired into the watcher?"  Editing happens via the per-symbol
+  // 📋/🔔 entry points; this view is read+toggle+delete only.
+  async function refreshThesesRules() {
+    if (!state.currentPortfolioId) return;
+    const host = $('#theses-rules-host');
+    if (!host) return;
+    try {
+      const [t, r] = await Promise.all([
+        api(`/api/portfolios/${state.currentPortfolioId}/theses`),
+        api(`/api/portfolios/${state.currentPortfolioId}/alert-rules`),
+      ]);
+      const theses = t.theses || [];
+      const rules  = r.rules  || [];
+      $('#theses-rules-sub').textContent =
+        `${theses.length} theses · ${rules.length} alert rules`;
+      if (!theses.length && !rules.length) {
+        host.innerHTML = `
+          <div class="empty-row" style="padding:8px 0;">
+            Nothing custom yet — click 📋 on a holding (Custom thesis) or 🔔 on a
+            watchlist tile (Alert rules) to add some.
+          </div>`;
+        return;
+      }
+      const fmtRuleVal = p =>
+        p.value     != null ? `$${p.value}` :
+        p.pct       != null ? `${p.pct}%` :
+        p.threshold != null ? `${p.threshold}×` : '';
+      const thesisHtml = theses.length ? `
+        <h3 style="margin: 4px 0 8px; font-size: 13px;">Theses</h3>
+        ${theses.map(th => {
+          const summary = [...(th.buy_rules || []).map(g => 'BUY ' + (g.conds||[]).map(c => `${c.indicator} ${c.op} ${c.value}`).join(' & ')),
+                           ...(th.sell_rules || []).map(g => 'SELL ' + (g.conds||[]).map(c => `${c.indicator} ${c.op} ${c.value}`).join(' & '))].join(' · ');
+          return `
+            <div class="rule-row">
+              <span class="rule-kind ${th.enabled ? '' : 'off'}">
+                <strong>${th.symbol}</strong> · ${escapeHtml(th.name)}
+                <span style="color: var(--ink-mute); font-size:11px;"> — ${escapeHtml(summary || 'no rules')}</span>
+              </span>
+              <span class="rule-last">${th.last_fired_signal ? 'last ' + th.last_fired_signal : 'idle'}</span>
+              <button class="link-btn" data-th-edit="${th.symbol}">edit</button>
+              <button class="link-btn" data-th-toggle="${th.id}" data-on="${th.enabled?1:0}">${th.enabled ? 'disable' : 'enable'}</button>
+            </div>`;
+        }).join('')}` : '';
+      const ruleHtml = rules.length ? `
+        <h3 style="margin: 12px 0 8px; font-size: 13px;">Alert rules</h3>
+        ${rules.map(rule => `
+          <div class="rule-row">
+            <span class="rule-kind ${rule.enabled ? '' : 'off'}">
+              <strong>${rule.symbol}</strong> · ${rule.kind} ${fmtRuleVal(rule.params)}
+            </span>
+            <span class="rule-last">${rule.last_fired_at ? 'last ' + (rule.last_fired_at.split('T')[0]) : 'idle'}</span>
+            <button class="link-btn" data-r-edit="${rule.symbol}">edit</button>
+            <button class="link-btn" data-r-toggle="${rule.id}" data-on="${rule.enabled?1:0}">${rule.enabled ? 'disable' : 'enable'}</button>
+          </div>`).join('')}` : '';
+      host.innerHTML = thesisHtml + ruleHtml;
+      $$('[data-th-edit]', host).forEach(b => b.addEventListener('click',
+        () => openThesisModal(b.dataset.thEdit)));
+      $$('[data-th-toggle]', host).forEach(b => b.addEventListener('click', async () => {
+        const next = b.dataset.on === '1' ? false : true;
+        try {
+          await api(`/api/portfolios/${state.currentPortfolioId}/theses/${b.dataset.thToggle}`,
+            { method: 'PATCH', body: JSON.stringify({ enabled: next }) });
+          refreshThesesRules();
+          refreshOnce();
+        } catch (err) { toast(err.message, 'error'); }
+      }));
+      $$('[data-r-edit]', host).forEach(b => b.addEventListener('click',
+        () => openAlertRulesModal(b.dataset.rEdit)));
+      $$('[data-r-toggle]', host).forEach(b => b.addEventListener('click', async () => {
+        const next = b.dataset.on === '1' ? false : true;
+        try {
+          await api(`/api/portfolios/${state.currentPortfolioId}/alert-rules/${b.dataset.rToggle}`,
+            { method: 'PATCH', body: JSON.stringify({ enabled: next }) });
+          refreshThesesRules();
+        } catch (err) { toast(err.message, 'error'); }
+      }));
+    } catch (err) {
+      host.innerHTML = `<div class="form-error">${escapeHtml(err.message)}</div>`;
+    }
+  }
+
   function renderTransactions(txs, totalRealized) {
     const tbody = $('#transactions-body');
     $('#realized-sub').textContent = `${txs.length} sells · ${fmtMoney(totalRealized)} realized`;
@@ -2271,6 +2355,10 @@
           <label class="full">Thesis name
             <input name="name" placeholder="e.g. SOL bargain hunt" autocomplete="off" required />
           </label>
+          <div class="full" style="font-size:12px; color:var(--ink-mute); margin: -4px 0 -2px;">
+            Quick templates — click to fill the rule builder, then tweak:
+          </div>
+          <div class="full preset-row" id="thesis-templates" style="gap:6px; margin-bottom:6px;"></div>
           <label class="full" style="display:flex; flex-direction:row; align-items:center; gap:10px;">
             <input name="enabled" type="checkbox" style="width:auto;" checked />
             <span>Active — evaluate every 5 min and alert on hits</span>
@@ -2308,6 +2396,57 @@
         if (!host.children.length) host.insertAdjacentHTML('beforeend', thesisCondRow());
       }
     });
+    // Render thesis templates (pre-baked rule sets the user can pick)
+    const templates = [
+      { id: 'rsi-oversold', label: '🩹 RSI oversold buy', name: 'RSI oversold',
+        buy: { logic: 'AND', conds: [
+          { indicator: 'rsi', op: 'lt', value: 30 },
+        ]}, sell: null },
+      { id: 'ema-pullback', label: '🎯 Pullback to EMA21', name: 'Pullback buy',
+        buy: { logic: 'AND', conds: [
+          { indicator: 'price_vs_ema21', op: 'lt', value: 1 },
+          { indicator: 'ema9',  op: 'gt', value: 0 },  // value is placeholder; user edits
+        ]}, sell: null },
+      { id: 'premium-sell', label: '🍌 Take profit (extended)', name: 'Premium exit',
+        buy: null,
+        sell: { logic: 'AND', conds: [
+          { indicator: 'price_vs_ema21', op: 'gt', value: 8 },
+        ]} },
+      { id: 'rsi-overbought', label: '🚨 RSI overbought sell', name: 'RSI overbought',
+        buy: null,
+        sell: { logic: 'AND', conds: [
+          { indicator: 'rsi', op: 'gt', value: 75 },
+        ]} },
+      { id: 'dip-buy', label: '🩸 24h dip buy (-15%)', name: 'Dip buy',
+        buy: { logic: 'AND', conds: [
+          { indicator: 'pct_24h', op: 'lt', value: -15 },
+        ]}, sell: null },
+      { id: 'pump-warn', label: '🔥 Volume pump warn', name: 'Volume pump',
+        buy: null,
+        sell: { logic: 'AND', conds: [
+          { indicator: 'rvol',    op: 'gt', value: 5 },
+          { indicator: 'pct_24h', op: 'gt', value: 30 },
+        ]} },
+    ];
+    const tplHost = thesisModal.querySelector('#thesis-templates');
+    if (tplHost) {
+      tplHost.innerHTML = templates.map(t =>
+        `<button type="button" class="ghost-btn" data-thesis-tpl="${t.id}">${t.label}</button>`
+      ).join('');
+      tplHost.addEventListener('click', (e) => {
+        const btn = e.target.closest('[data-thesis-tpl]');
+        if (!btn) return;
+        const tpl = templates.find(t => t.id === btn.dataset.thesisTpl);
+        if (!tpl) return;
+        const f = thesisModal.querySelector('#thesis-form');
+        if (!f.elements.name.value.trim()) f.elements.name.value = tpl.name;
+        thesisModal.querySelector('#thesis-buy-host').innerHTML  =
+          thesisGroupBlock('BUY when…',  'buy',  tpl.buy);
+        thesisModal.querySelector('#thesis-sell-host').innerHTML =
+          thesisGroupBlock('SELL when…', 'sell', tpl.sell);
+      });
+    }
+
     thesisModal.querySelector('#thesis-form').addEventListener('submit', async (e) => {
       e.preventDefault();
       const f = e.target;
@@ -2340,6 +2479,7 @@
         toast('Thesis saved', 'success');
         thesisModal.hidden = true;
         refreshOnce();
+        refreshThesesRules();
       } catch (err) {
         $('#thesis-error').textContent = err.message;
       }
@@ -2399,6 +2539,7 @@
               toast('Thesis deleted', 'success');
               thesisModal.hidden = true;
               refreshOnce();
+              refreshThesesRules();
             } catch (err) { toast(err.message, 'error'); }
           });
         });
@@ -2436,6 +2577,18 @@
           </div>
           <div class="full" id="rules-list"></div>
           <hr class="full" style="border:0; border-top:1px solid var(--line);" />
+          <div class="full" style="font-size:12px; color:var(--ink-mute); margin-bottom:4px;">
+            Quick presets (use the current price):
+          </div>
+          <div class="full preset-row" id="rule-presets" style="margin-bottom:8px; gap:6px;">
+            <button type="button" class="ghost-btn" data-preset="up10">+10%</button>
+            <button type="button" class="ghost-btn" data-preset="up25">+25%</button>
+            <button type="button" class="ghost-btn" data-preset="down10">-10%</button>
+            <button type="button" class="ghost-btn" data-preset="down25">-25%</button>
+            <button type="button" class="ghost-btn" data-preset="pct15">±15% 24h</button>
+            <button type="button" class="ghost-btn" data-preset="vol3">Vol ≥ 3×</button>
+            <button type="button" class="ghost-btn" data-preset="flip">Signal flip</button>
+          </div>
           <form id="rule-add-form" class="full form-grid" style="grid-template-columns: 1fr 1fr;">
             <label>Kind
               <select name="kind">
@@ -2473,6 +2626,39 @@
     };
     form.elements.kind.addEventListener('change', updateValVisibility);
     updateValVisibility();
+
+    // Preset buttons — read the current price/quote off the live snapshot or
+    // watchData, then POST the corresponding rule directly.
+    $$('#rule-presets [data-preset]').forEach(btn => {
+      btn.addEventListener('click', async () => {
+        const sym = rulesModal.dataset.symbol;
+        const q = (state.snapshot?.rows || []).find(r => r.symbol === sym)
+                  || state.watchData[sym] || null;
+        const price = q && q.price;
+        let body = null;
+        switch (btn.dataset.preset) {
+          case 'up10':   if (price) body = { symbol: sym, kind: 'price_above', params: { value: +(price * 1.10).toFixed(6) } }; break;
+          case 'up25':   if (price) body = { symbol: sym, kind: 'price_above', params: { value: +(price * 1.25).toFixed(6) } }; break;
+          case 'down10': if (price) body = { symbol: sym, kind: 'price_below', params: { value: +(price * 0.90).toFixed(6) } }; break;
+          case 'down25': if (price) body = { symbol: sym, kind: 'price_below', params: { value: +(price * 0.75).toFixed(6) } }; break;
+          case 'pct15':  body = { symbol: sym, kind: 'pct_move_24h', params: { pct: 15 } }; break;
+          case 'vol3':   body = { symbol: sym, kind: 'volume_spike', params: { threshold: 3 } }; break;
+          case 'flip':   body = { symbol: sym, kind: 'signal_flip',  params: {} }; break;
+        }
+        if (!body) {
+          $('#rule-error').textContent = 'No live price for ' + sym + ' yet — fill the value field instead.';
+          return;
+        }
+        $('#rule-error').textContent = '';
+        try {
+          await api(`/api/portfolios/${state.currentPortfolioId}/alert-rules`,
+            { method: 'POST', body: JSON.stringify(body) });
+          toast('Alert rule added', 'success');
+          loadRulesList(sym);
+        } catch (err) { $('#rule-error').textContent = err.message; }
+      });
+    });
+
     form.addEventListener('submit', async (e) => {
       e.preventDefault();
       const kind = form.elements.kind.value;
@@ -2705,6 +2891,7 @@
       openStream();
       refreshWatchlist();
       refreshTransactions();
+      refreshThesesRules();
       refreshMarket();
       refreshCorrelation();
       // Funding rates update on cycle boundaries; pull right after first
