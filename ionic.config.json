@@ -1,0 +1,7 @@
+{
+  "name": "Overkill",
+  "integrations": {
+    "capacitor": {}
+  },
+  "type": "react-vite"
+}

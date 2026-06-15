@@ -1,0 +1,63 @@
+/* ZBCN-inspired dark crypto theme — mirrors src/theme/tokens.ts. */
+
+:root {
+  --ok-bg: #0a0b0d;
+  --ok-surface: #15181e;
+  --ok-border: #222733;
+  --ok-primary: #c6f432;
+  --ok-secondary: #22d3ee;
+  --ok-bullish: #16c784;
+  --ok-bearish: #ea3943;
+  --ok-yellow: #f5a623;
+  --ok-text: #e6e9ef;
+  --ok-muted: #8a93a3;
+
+  /* Ionic color system */
+  --ion-background-color: var(--ok-bg);
+  --ion-background-color-rgb: 10, 11, 13;
+  --ion-text-color: var(--ok-text);
+  --ion-text-color-rgb: 230, 233, 239;
+
+  --ion-color-primary: var(--ok-primary);
+  --ion-color-primary-rgb: 198, 244, 50;
+  --ion-color-primary-contrast: #0a0b0d;
+  --ion-color-primary-contrast-rgb: 10, 11, 13;
+  --ion-color-primary-shade: #aed72c;
+  --ion-color-primary-tint: #ccf547;
+
+  --ion-card-background: var(--ok-surface);
+  --ion-item-background: var(--ok-surface);
+  --ion-toolbar-background: #0d0f13;
+  --ion-tab-bar-background: #0d0f13;
+  --ion-border-color: var(--ok-border);
+
+  --ion-font-family: 'Inter', system-ui, -apple-system, sans-serif;
+}
+
+/* Tabular monospace numerals for all prices / percentages. */
+.ok-num {
+  font-variant-numeric: tabular-nums;
+  font-family: 'JetBrains Mono', 'SF Mono', ui-monospace, monospace;
+}
+
+.ok-card {
+  background: var(--ok-surface);
+  border: 1px solid var(--ok-border);
+  border-radius: 14px;
+  backdrop-filter: blur(6px);
+}
+
+.ok-bullish { color: var(--ok-bullish); }
+.ok-bearish { color: var(--ok-bearish); }
+.ok-yellow { color: var(--ok-yellow); }
+.ok-primary { color: var(--ok-primary); }
+.ok-muted { color: var(--ok-muted); }
+
+.ok-pill {
+  display: inline-block;
+  padding: 2px 8px;
+  border-radius: 999px;
+  font-size: 0.72rem;
+  font-weight: 700;
+  letter-spacing: 0.02em;
+}
