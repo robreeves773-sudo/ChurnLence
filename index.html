@@ -1,0 +1,28 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
+    <title>Overkill Signals</title>
+    <link rel="stylesheet" href="/src/ui/styles.css" />
+  </head>
+  <body>
+    <header>
+      <h1>Overkill Signals</h1>
+      <div id="regime" class="regime mixed">Regime: —</div>
+    </header>
+
+    <main>
+      <canvas id="chart" width="360" height="180"></canvas>
+      <p class="legend">
+        <span class="dot filled buy"></span> confirmed BUY
+        <span class="dot filled sell"></span> confirmed SELL
+        <span class="dot hollow"></span> pending (intraday, unconfirmed)
+      </p>
+      <div id="settings"></div>
+      <p class="disclaimer">Alert-only — it notifies you; every market decision is yours.</p>
+    </main>
+
+    <script type="module" src="/src/main.ts"></script>
+  </body>
+</html>

@@ -1,0 +1,54 @@
+:root {
+  --bg: #0b1220;
+  --panel: #131c2e;
+  --text: #e2e8f0;
+  --muted: #94a3b8;
+  --buy: #10b981;
+  --sell: #ef4444;
+  --pending: #f59e0b;
+}
+
+* { box-sizing: border-box; }
+
+body {
+  margin: 0;
+  font-family: system-ui, -apple-system, Segoe UI, Roboto, sans-serif;
+  background: var(--bg);
+  color: var(--text);
+  padding: env(safe-area-inset-top) 0 0;
+}
+
+header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 12px 16px;
+}
+
+h1 { font-size: 18px; margin: 0; }
+h2 { font-size: 14px; color: var(--muted); margin: 16px 0 8px; text-transform: uppercase; letter-spacing: 0.04em; }
+
+main { padding: 0 16px 32px; }
+
+.regime { font-size: 13px; font-weight: 600; padding: 4px 10px; border-radius: 999px; }
+.regime.constructive { background: rgba(16, 185, 129, 0.15); color: var(--buy); }
+.regime.defensive { background: rgba(239, 68, 68, 0.15); color: var(--sell); }
+.regime.mixed { background: rgba(148, 163, 184, 0.15); color: var(--muted); }
+
+canvas { width: 100%; height: auto; background: var(--panel); border-radius: 12px; }
+
+.legend { font-size: 12px; color: var(--muted); display: flex; gap: 12px; align-items: center; flex-wrap: wrap; }
+.dot { display: inline-block; width: 10px; height: 10px; border-radius: 50%; vertical-align: middle; }
+.dot.filled.buy { background: var(--buy); }
+.dot.filled.sell { background: var(--sell); }
+.dot.hollow { background: transparent; border: 2px solid var(--pending); }
+
+section { background: var(--panel); border-radius: 12px; padding: 12px 14px; margin-bottom: 12px; }
+.coin-row { display: flex; align-items: center; justify-content: space-between; padding: 6px 0; }
+select, input[type='time'] { background: #0b1220; color: var(--text); border: 1px solid #2a3650; border-radius: 8px; padding: 6px 8px; }
+button { background: var(--buy); color: #06281d; border: none; border-radius: 8px; padding: 10px 14px; font-weight: 700; }
+code { background: #0b1220; padding: 2px 6px; border-radius: 6px; }
+.topic { font-size: 13px; color: var(--muted); }
+.note, .disclaimer { font-size: 12px; color: var(--muted); }
+.disclaimer { text-align: center; margin-top: 24px; }
+.quiet-range { margin-top: 8px; display: flex; align-items: center; gap: 6px; }
