@@ -333,6 +333,9 @@ CREATE TABLE IF NOT EXISTS alert_prefs (
     last_digest_date TEXT,                        -- YYYY-MM-DD; throttle to once per day
     discord_webhook TEXT,                         -- POST signal flips here
     discord_enabled INTEGER NOT NULL DEFAULT 0,
+    telegram_bot_token TEXT,                      -- @BotFather token
+    telegram_chat_id TEXT,                        -- user's Telegram chat id
+    telegram_enabled INTEGER NOT NULL DEFAULT 0,
     updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
 );
 
@@ -401,11 +404,14 @@ def _migrate(conn: sqlite3.Connection) -> None:
     ap_cols = {row[1] for row in conn.execute("PRAGMA table_info(alert_prefs)").fetchall()}
     if ap_cols:  # table exists from prior version — add new columns
         for col, ddl in [
-            ("daily_digest",     "INTEGER NOT NULL DEFAULT 0"),
-            ("digest_hour_utc",  "INTEGER NOT NULL DEFAULT 13"),
-            ("last_digest_date", "TEXT"),
-            ("discord_webhook",  "TEXT"),
-            ("discord_enabled",  "INTEGER NOT NULL DEFAULT 0"),
+            ("daily_digest",       "INTEGER NOT NULL DEFAULT 0"),
+            ("digest_hour_utc",    "INTEGER NOT NULL DEFAULT 13"),
+            ("last_digest_date",   "TEXT"),
+            ("discord_webhook",    "TEXT"),
+            ("discord_enabled",    "INTEGER NOT NULL DEFAULT 0"),
+            ("telegram_bot_token", "TEXT"),
+            ("telegram_chat_id",   "TEXT"),
+            ("telegram_enabled",   "INTEGER NOT NULL DEFAULT 0"),
         ]:
             if col not in ap_cols:
                 conn.execute(f"ALTER TABLE alert_prefs ADD COLUMN {col} {ddl}")
@@ -2238,35 +2244,47 @@ def alert_prefs(pid: int):
                 and not webhook.startswith("https://discordapp.com/api/webhooks/"):
             return jsonify({"error": "discord_webhook must be a discord.com webhook URL"}), 400
         discord_enabled = 1 if data.get("discord_enabled") else 0
+        tg_token = (data.get("telegram_bot_token") or "").strip() or None
+        tg_chat  = (data.get("telegram_chat_id")   or "").strip() or None
+        tg_enabled = 1 if data.get("telegram_enabled") else 0
         db.execute(
             "INSERT INTO alert_prefs(portfolio_id, email, enabled, daily_digest, digest_hour_utc, "
-            "discord_webhook, discord_enabled, updated_at) "
-            "VALUES (?, ?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP) "
+            "discord_webhook, discord_enabled, telegram_bot_token, telegram_chat_id, "
+            "telegram_enabled, updated_at) "
+            "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP) "
             "ON CONFLICT(portfolio_id) DO UPDATE SET email = excluded.email, "
             "enabled = excluded.enabled, daily_digest = excluded.daily_digest, "
             "digest_hour_utc = excluded.digest_hour_utc, "
             "discord_webhook = excluded.discord_webhook, "
             "discord_enabled = excluded.discord_enabled, "
+            "telegram_bot_token = excluded.telegram_bot_token, "
+            "telegram_chat_id = excluded.telegram_chat_id, "
+            "telegram_enabled = excluded.telegram_enabled, "
             "updated_at = CURRENT_TIMESTAMP",
-            (pid, email, enabled, daily, hour, webhook, discord_enabled),
+            (pid, email, enabled, daily, hour, webhook, discord_enabled,
+             tg_token, tg_chat, tg_enabled),
         )
         db.commit()
     row = db.execute(
         "SELECT email, enabled, daily_digest, digest_hour_utc, last_digest_date, "
-        "discord_webhook, discord_enabled, updated_at "
+        "discord_webhook, discord_enabled, telegram_bot_token, telegram_chat_id, "
+        "telegram_enabled, updated_at "
         "FROM alert_prefs WHERE portfolio_id = ?",
         (pid,),
     ).fetchone()
     return jsonify({
-        "email":            row["email"] if row else None,
-        "enabled":          bool(row["enabled"]) if row else False,
-        "daily_digest":     bool(row["daily_digest"]) if row else False,
-        "digest_hour_utc":  int(row["digest_hour_utc"]) if row else 13,
-        "last_digest_date": row["last_digest_date"] if row else None,
-        "discord_webhook":  row["discord_webhook"] if row else None,
-        "discord_enabled":  bool(row["discord_enabled"]) if row else False,
-        "updated_at":       row["updated_at"] if row else None,
-        "smtp_configured":  bool(SMTP_HOST and SMTP_USER and SMTP_PASS),
+        "email":              row["email"] if row else None,
+        "enabled":            bool(row["enabled"]) if row else False,
+        "daily_digest":       bool(row["daily_digest"]) if row else False,
+        "digest_hour_utc":    int(row["digest_hour_utc"]) if row else 13,
+        "last_digest_date":   row["last_digest_date"] if row else None,
+        "discord_webhook":    row["discord_webhook"] if row else None,
+        "discord_enabled":    bool(row["discord_enabled"]) if row else False,
+        "telegram_bot_token": row["telegram_bot_token"] if row else None,
+        "telegram_chat_id":   row["telegram_chat_id"] if row else None,
+        "telegram_enabled":   bool(row["telegram_enabled"]) if row else False,
+        "updated_at":         row["updated_at"] if row else None,
+        "smtp_configured":    bool(SMTP_HOST and SMTP_USER and SMTP_PASS),
     })
 
 
@@ -2547,6 +2565,24 @@ def discord_test(pid: int):
         return jsonify({"error": "no Discord webhook saved for this portfolio"}), 400
     _send_discord_alert(row["discord_webhook"], "TEST", "—", "BUY",
                         0.0, "ChurnLence test ping — alerts are working.")
+    return jsonify({"ok": True})
+
+
+@app.route("/api/portfolios/<int:pid>/telegram/test", methods=["POST"])
+def telegram_test(pid: int):
+    """Send a test DM via the saved Telegram bot.  Verifies that the bot
+    token + chat id are correct — common gotcha is the user forgetting to
+    /start the bot, which means Telegram returns 403 forbidden."""
+    db = get_db()
+    row = db.execute(
+        "SELECT telegram_bot_token, telegram_chat_id FROM alert_prefs "
+        "WHERE portfolio_id = ?", (pid,),
+    ).fetchone()
+    if not row or not row["telegram_bot_token"] or not row["telegram_chat_id"]:
+        return jsonify({"error": "no Telegram bot token + chat id saved"}), 400
+    _send_telegram_alert(row["telegram_bot_token"], row["telegram_chat_id"],
+                          "TEST", "—", "BUY", 0.0,
+                          "ChurnLence test ping — alerts are working.")
     return jsonify({"ok": True})
 
 
@@ -3566,6 +3602,32 @@ def _send_alert_email(to: str, symbol: str, from_sig: str | None, to_sig: str,
         app.logger.warning("email alert failed: %s", exc)
 
 
+def _send_telegram_alert(token: str, chat_id: str, symbol: str,
+                          from_sig: str | None, to_sig: str,
+                          price: float, reason: str) -> None:
+    """Telegram Bot API — direct DM to phone, free, instant.  Setup is a
+    two-minute path: chat with @BotFather → /newbot → copy token; chat with
+    @userinfobot → copy your chat id.  Both go in the Email alerts modal."""
+    if not (token and chat_id):
+        return
+    emoji = "🟢" if to_sig == "BUY" else "🔴" if to_sig == "SELL" else "⚪"
+    text = (f"{emoji} *{symbol}* → *{to_sig}*\n"
+            f"From: {from_sig or '—'}  ·  Price: `${price:,.6g}`\n"
+            f"_{reason}_")
+    url = f"https://api.telegram.org/bot{token}/sendMessage"
+    body = json.dumps({"chat_id": chat_id, "text": text,
+                       "parse_mode": "Markdown",
+                       "disable_web_page_preview": True}).encode()
+    try:
+        req = urllib.request.Request(url, data=body, method="POST",
+                                     headers={"Content-Type": "application/json",
+                                              "User-Agent": "ChurnLence/1.0"})
+        with urllib.request.urlopen(req, timeout=8) as resp:
+            resp.read()
+    except Exception as exc:
+        app.logger.warning("telegram alert failed: %s", exc)
+
+
 _THESIS_COOLDOWN_SEC = 30 * 60   # 30 min between same-signal re-fires
 _RULE_COOLDOWN_SEC   = 4 * 3600  # 4 h between same-rule re-fires
 
@@ -3573,10 +3635,13 @@ _RULE_COOLDOWN_SEC   = 4 * 3600  # 4 h between same-rule re-fires
 def _fire_alert(db, pid: int, sym: str, from_sig: str | None, to_sig: str,
                 price: float, reason: str,
                 email: str | None, email_on: int,
-                discord_webhook: str | None, discord_on: int) -> None:
-    """Insert a signal_events row + dispatch email/Discord per portfolio prefs.
-    Used by both the default Overkill watcher and the new thesis/rule watchers
-    so delivery stays uniform."""
+                discord_webhook: str | None, discord_on: int,
+                telegram_token: str | None = None,
+                telegram_chat_id: str | None = None,
+                telegram_on: int = 0) -> None:
+    """Insert a signal_events row + dispatch email/Discord/Telegram per
+    portfolio prefs.  Used by both the default Overkill watcher and the
+    thesis/rule watchers so delivery stays uniform across channels."""
     db.execute(
         "INSERT INTO signal_events(portfolio_id, symbol, from_signal, "
         "to_signal, price, reason) VALUES (?, ?, ?, ?, ?, ?)",
@@ -3587,6 +3652,9 @@ def _fire_alert(db, pid: int, sym: str, from_sig: str | None, to_sig: str,
         _send_alert_email(email, sym, from_sig, to_sig, price, reason)
     if discord_on and discord_webhook:
         _send_discord_alert(discord_webhook, sym, from_sig, to_sig, price, reason)
+    if telegram_on and telegram_token and telegram_chat_id:
+        _send_telegram_alert(telegram_token, telegram_chat_id,
+                              sym, from_sig, to_sig, price, reason)
 
 
 def _evaluate_alert_rule(rule: dict, q, prev_to: str | None) -> tuple[bool, str]:
@@ -3626,7 +3694,8 @@ def _signal_watcher_loop():
                 portfolios = db.execute(
                     "SELECT p.id, p.name, ap.email, ap.enabled, ap.daily_digest, "
                     "ap.digest_hour_utc, ap.last_digest_date, "
-                    "ap.discord_webhook, ap.discord_enabled "
+                    "ap.discord_webhook, ap.discord_enabled, "
+                    "ap.telegram_bot_token, ap.telegram_chat_id, ap.telegram_enabled "
                     "FROM portfolios p "
                     "LEFT JOIN alert_prefs ap ON ap.portfolio_id = p.id"
                 ).fetchall()
@@ -3638,6 +3707,9 @@ def _signal_watcher_loop():
                     discord_on  = p["discord_enabled"] or 0
                     email       = p["email"]
                     discord_url = p["discord_webhook"]
+                    tg_on       = p["telegram_enabled"] or 0
+                    tg_token    = p["telegram_bot_token"]
+                    tg_chat     = p["telegram_chat_id"]
 
                     # Gather holdings ∪ watchlist symbols (dedupe to limit
                     # yfinance hits) — watchlist is the new bit.
@@ -3681,7 +3753,8 @@ def _signal_watcher_loop():
                             elif prev_to != q.signal:
                                 _fire_alert(db, pid, sym, prev_to, q.signal,
                                             q.price, q.signal_reason,
-                                            email, email_on, discord_url, discord_on)
+                                            email, email_on, discord_url, discord_on,
+                                            tg_token, tg_chat, tg_on)
                                 _last_signals[key] = q.signal
 
                         # --- custom thesis evaluation ---
@@ -3705,7 +3778,8 @@ def _signal_watcher_loop():
                             reason = f"Thesis: {name} → {new_sig}"
                             _fire_alert(db, pid, sym, last_sig, new_sig,
                                         q.price, reason,
-                                        email, email_on, discord_url, discord_on)
+                                        email, email_on, discord_url, discord_on,
+                                            tg_token, tg_chat, tg_on)
                             db.execute(
                                 "UPDATE coin_theses SET last_fired_signal = ?, "
                                 "last_fired_at = ? WHERE id = ?",
@@ -3735,7 +3809,8 @@ def _signal_watcher_loop():
                             tag = f"Alert ({r['kind']}): {reason}"
                             _fire_alert(db, pid, sym, None, q.signal,
                                         q.price, tag,
-                                        email, email_on, discord_url, discord_on)
+                                        email, email_on, discord_url, discord_on,
+                                            tg_token, tg_chat, tg_on)
                             db.execute(
                                 "UPDATE alert_rules SET last_fired_at = ? WHERE id = ?",
                                 (now.isoformat(), r["id"]),

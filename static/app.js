@@ -2054,6 +2054,9 @@
         f.elements.digest_hour_utc.value = String(p.digest_hour_utc ?? 13);
         if (f.elements.discord_webhook) f.elements.discord_webhook.value = p.discord_webhook || '';
         if (f.elements.discord_enabled) f.elements.discord_enabled.checked = !!p.discord_enabled;
+        if (f.elements.telegram_bot_token) f.elements.telegram_bot_token.value = p.telegram_bot_token || '';
+        if (f.elements.telegram_chat_id)   f.elements.telegram_chat_id.value   = p.telegram_chat_id   || '';
+        if (f.elements.telegram_enabled)   f.elements.telegram_enabled.checked = !!p.telegram_enabled;
         const status = $('#alerts-status');
         status.style.color = '';
         const lines = [];
@@ -2080,6 +2083,9 @@
         digest_hour_utc: parseInt(f.digest_hour_utc.value, 10),
         discord_webhook: f.discord_webhook ? f.discord_webhook.value.trim() : '',
         discord_enabled: f.discord_enabled ? f.discord_enabled.checked : false,
+        telegram_bot_token: f.telegram_bot_token ? f.telegram_bot_token.value.trim() : '',
+        telegram_chat_id:   f.telegram_chat_id   ? f.telegram_chat_id.value.trim()   : '',
+        telegram_enabled:   f.telegram_enabled   ? f.telegram_enabled.checked        : false,
       };
       try {
         await api(`/api/portfolios/${state.currentPortfolioId}/alerts`,
@@ -2123,25 +2129,32 @@
 
     $('#kelly-refresh-btn')?.addEventListener('click', refreshKelly);
 
-    $('#discord-test-btn')?.addEventListener('click', async () => {
-      // Save the webhook + enable flag first so the test hits the URL the user just typed.
+    // Save current modal state then post to the channel's test endpoint so
+    // the user can verify their config without leaving the modal.  Shared
+    // helper because Telegram and Discord follow the same pattern.
+    async function saveAlertsThenTest(channel) {
       const f = $('#alerts-form').elements;
+      const payload = {
+        email: f.email.value.trim(),
+        enabled: f.enabled.checked,
+        daily_digest: f.daily_digest.checked,
+        digest_hour_utc: parseInt(f.digest_hour_utc.value, 10),
+        discord_webhook: f.discord_webhook ? f.discord_webhook.value.trim() : '',
+        discord_enabled: f.discord_enabled ? f.discord_enabled.checked : false,
+        telegram_bot_token: f.telegram_bot_token ? f.telegram_bot_token.value.trim() : '',
+        telegram_chat_id:   f.telegram_chat_id   ? f.telegram_chat_id.value.trim()   : '',
+        telegram_enabled:   f.telegram_enabled   ? f.telegram_enabled.checked        : false,
+      };
       try {
-        await api(`/api/portfolios/${state.currentPortfolioId}/alerts`, {
-          method: 'POST',
-          body: JSON.stringify({
-            email: f.email.value.trim(),
-            enabled: f.enabled.checked,
-            daily_digest: f.daily_digest.checked,
-            digest_hour_utc: parseInt(f.digest_hour_utc.value, 10),
-            discord_webhook: f.discord_webhook.value.trim(),
-            discord_enabled: f.discord_enabled.checked,
-          }),
-        });
-        await api(`/api/portfolios/${state.currentPortfolioId}/discord/test`, { method: 'POST' });
-        toast('Discord test ping sent', 'success');
+        await api(`/api/portfolios/${state.currentPortfolioId}/alerts`,
+          { method: 'POST', body: JSON.stringify(payload) });
+        await api(`/api/portfolios/${state.currentPortfolioId}/${channel}/test`,
+          { method: 'POST' });
+        toast(`${channel[0].toUpperCase()+channel.slice(1)} test ping sent`, 'success');
       } catch (ex) { toast(ex.message, 'error'); }
-    });
+    }
+    $('#discord-test-btn') ?.addEventListener('click', () => saveAlertsThenTest('discord'));
+    $('#telegram-test-btn')?.addEventListener('click', () => saveAlertsThenTest('telegram'));
 
     // ----- backtest -----
     $('#backtest-form').addEventListener('submit', async (e) => {

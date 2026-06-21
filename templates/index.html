@@ -780,6 +780,29 @@ NVDA,15,120"></textarea>
           <button type="button" class="ghost-btn" id="discord-test-btn" title="Send a test ping right now">Test ping</button>
         </div>
 
+        <hr class="full" style="border:0; border-top:1px solid var(--line); margin:6px 0;"/>
+        <div class="full" style="color:var(--ink-mute); font-size:13px;">
+          <strong>Telegram bot</strong> — direct DM to your phone, free, instant.
+          Setup (2 min):
+          (1) chat with <em>@BotFather</em> → <code>/newbot</code> → copy the token,
+          (2) chat with <em>@userinfobot</em> → copy your numeric chat id,
+          (3) send any message to your new bot first (otherwise Telegram blocks it).
+        </div>
+        <label class="full">Bot token
+          <input name="telegram_bot_token" type="text" placeholder="123456:ABC-DEF…"
+                 autocomplete="off" spellcheck="false" />
+        </label>
+        <label>Chat id
+          <input name="telegram_chat_id" type="text" placeholder="e.g. 123456789" autocomplete="off" />
+        </label>
+        <label class="full" style="display:flex; flex-direction:row; align-items:center; gap:10px;">
+          <input name="telegram_enabled" type="checkbox" style="width:auto;" />
+          <span>Send signal flips to Telegram</span>
+        </label>
+        <div class="form-actions" style="grid-column: span 1; justify-content: flex-start;">
+          <button type="button" class="ghost-btn" id="telegram-test-btn" title="Send a test DM right now">Test ping</button>
+        </div>
+
         <div class="form-error" id="alerts-status"></div>
         <div class="form-actions">
           <button type="button" class="ghost-btn" data-close>Close</button>
