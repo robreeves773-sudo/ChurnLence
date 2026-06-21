@@ -139,6 +139,14 @@
           var msg = (args && args.tail) || '';
           if (window.AICopilot) window.AICopilot.open(msg);
         } },
+      { id: 'act:briefing', label: 'Morning briefing', sub: 'Jarvis 3-sentence overnight summary',
+        cat: 'Actions', icon: '☀', keywords: 'briefing morning summary overnight digest jarvis',
+        run: function () {
+          if (window.churnlence && window.churnlence.requestMorningBriefing) {
+            window.churnlence.requestMorningBriefing();
+            if (window.AICopilot) window.AICopilot.open();
+          }
+        } },
       { id: 'act:ai:settings', label: 'AI Copilot · API key', sub: 'Add or update your Anthropic / OpenAI key',
         cat: 'Settings', icon: '⚙', keywords: 'ai key api anthropic openai claude config settings',
         run: function () { if (window.AICopilot) window.AICopilot.openSettings(); } },

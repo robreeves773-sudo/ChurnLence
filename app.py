@@ -2673,6 +2673,109 @@ def jarvis_memory_delete(pid: int, mid: int):
     return jsonify({"ok": True})
 
 
+def _heuristic_briefing(snap: dict, events: list[dict]) -> str:
+    """No-AI-key fallback for the morning briefing.  Pure arithmetic over the
+    current snapshot + the last 24h of signal events."""
+    rows = [r for r in (snap.get("rows") or []) if not r.get("error")]
+    t = snap.get("totals") or {}
+    bits = []
+    if t.get("value"):
+        bits.append(
+            f"Portfolio is ${t['value']:,.2f}, day P/L ${t.get('day_pl', 0):+,.2f}."
+        )
+    if rows:
+        top = max(rows, key=lambda r: r.get("change_pct") or 0)
+        bot = min(rows, key=lambda r: r.get("change_pct") or 0)
+        bits.append(
+            f"Best 24h: {top['symbol']} {top.get('change_pct', 0):+.2f}%; "
+            f"worst: {bot['symbol']} {bot.get('change_pct', 0):+.2f}%."
+        )
+    if events:
+        flips = ", ".join(f"{e['symbol']} → {e['to_signal']}" for e in events[:4])
+        bits.append(f"{len(events)} signal events in last 24h ({flips}).")
+    else:
+        bits.append("No signal events in last 24h — all positions steady.")
+    return " ".join(bits)
+
+
+@app.route("/api/portfolios/<int:pid>/jarvis/briefing", methods=["POST"])
+def jarvis_briefing(pid: int):
+    """Generate a 3-sentence overnight summary the user can read or hear.
+    Uses Claude Haiku when an API key is configured; falls back to a
+    deterministic heuristic so the endpoint always returns something."""
+    data = request.get_json(force=True, silent=True) or {}
+    mode = (data.get("mode") or "swing").lower()
+    snap = _portfolio_snapshot(pid, mode=mode)
+    if snap.get("error"):
+        return jsonify({"error": snap["error"]}), 400
+    # Pull last 24h of signal events for context
+    db = get_db()
+    rows = db.execute(
+        "SELECT symbol, from_signal, to_signal, price, reason, created_at "
+        "FROM signal_events WHERE portfolio_id = ? "
+        "AND datetime(created_at) >= datetime('now', '-1 day') "
+        "ORDER BY created_at DESC LIMIT 25",
+        (pid,),
+    ).fetchall()
+    events = [dict(r) for r in rows]
+
+    cfg = _ai_load_config()
+    api_key = cfg.get("api_key")
+    if not api_key:
+        return jsonify({"briefing": _heuristic_briefing(snap, events),
+                        "source": "heuristic", "events": len(events)})
+
+    # Build a tight prompt — three sentences max, no predictions, no advice.
+    sys = (
+        "You write a one-paragraph morning briefing for a crypto trader.  "
+        "STRICT RULES: exactly 3 sentences.  No price predictions.  No buy/sell "
+        "advice.  Plain English, no jargon.  Focus on what changed overnight "
+        "and what (if anything) needs attention.  Mention the portfolio value, "
+        "the biggest mover, and any signal flips in the last 24h.  If nothing "
+        "notable happened, say so.  Never use emoji."
+    )
+    t = snap.get("totals") or {}
+    rows_text = []
+    for r in (snap.get("rows") or [])[:12]:
+        if r.get("error"):
+            continue
+        rows_text.append(
+            f"  {r['symbol']:<10} ${r.get('price', 0):>10.4f}  "
+            f"24h {r.get('change_pct', 0):+6.2f}%  signal={r.get('signal', 'HOLD')}"
+            f"  RSI {r.get('rsi') or '—'}"
+        )
+    events_text = []
+    for e in events[:8]:
+        events_text.append(
+            f"  {e['created_at']}  {e['symbol']}  {e['from_signal'] or '—'} → {e['to_signal']}  "
+            f"@ ${e['price']:.6g}  ({e['reason']})"
+        )
+    user = (
+        f"Portfolio value: ${t.get('value', 0):,.2f}  ·  "
+        f"Day P/L: ${t.get('day_pl', 0):+,.2f}  ·  "
+        f"Total P/L: ${t.get('pl', 0):+,.2f} ({t.get('pl_pct', 0):+.2f}%)\n\n"
+        + "Holdings:\n" + ("\n".join(rows_text) or "  (none)")
+        + "\n\nSignal events last 24h:\n"
+        + ("\n".join(events_text) if events_text else "  (none)")
+        + "\n\nWrite the briefing now."
+    )
+    model = cfg.get("model") or _AI_MODEL
+    provider = cfg.get("provider", "anthropic")
+    try:
+        if provider == "openai":
+            text = _call_openai(api_key, sys, [{"role": "user", "content": user}], model)
+        else:
+            text = _call_anthropic(api_key, sys, [{"role": "user", "content": user}], model)
+        return jsonify({"briefing": text.strip(), "source": provider,
+                        "model": model, "events": len(events)})
+    except Exception as exc:
+        # Network blip → fall back to heuristic, don't show an error
+        app.logger.warning("briefing AI call failed: %s", exc)
+        return jsonify({"briefing": _heuristic_briefing(snap, events),
+                        "source": "heuristic-fallback",
+                        "events": len(events)})
+
+
 @app.route("/api/portfolios/<int:pid>/discord/test", methods=["POST"])
 def discord_test(pid: int):
     """Fire a test message to the saved Discord webhook so the user knows it works."""

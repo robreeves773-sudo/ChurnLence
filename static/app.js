@@ -2937,6 +2937,7 @@
   window.churnlence.openAlertRulesModal = openAlertRulesModal;
   window.churnlence.addToWatchlist = addToWatchlist;
   window.churnlence.removeFromWatchlist = removeFromWatchlist;
+  window.churnlence.requestMorningBriefing = () => requestMorningBriefing(true);
 
   // ---------- PWA: service worker + install prompt --------------------------
   function registerServiceWorker() {
@@ -3069,6 +3070,39 @@
     });
   }
 
+  // ---------- morning briefing ----------------------------------------------
+  // Jarvis-flavoured "what changed overnight" summary.  Auto-fires once per
+  // UTC day on first open; also available manually via the AI drawer button
+  // and the >briefing Cmd-K command.
+  async function requestMorningBriefing(forceShow = true) {
+    if (!state.currentPortfolioId) return null;
+    try {
+      const r = await api(`/api/portfolios/${state.currentPortfolioId}/jarvis/briefing`,
+        { method: 'POST', body: JSON.stringify({ mode: state.mode || 'swing' }) });
+      if (forceShow && r.briefing) {
+        // Push into Jarvis as a proactive bubble (drives voice readback too)
+        if (window.AICopilot && typeof window.AICopilot.pushProactive === 'function') {
+          window.AICopilot.pushProactive('Morning briefing: ' + r.briefing);
+        }
+        // Also a quieter toast so it's not lost if the drawer is closed
+        toast('Morning briefing ready in AI Copilot', 'info', 4000);
+      }
+      return r;
+    } catch (err) {
+      console.warn('briefing failed:', err);
+      return null;
+    }
+  }
+
+  function maybeMorningBriefing() {
+    const today = new Date().toISOString().slice(0, 10);   // UTC date stamp
+    const last = loadJSON('cl.briefing.lastDate', '');
+    if (last === today) return;          // already done today
+    requestMorningBriefing(true).then(r => {
+      if (r) saveJSON('cl.briefing.lastDate', today);
+    });
+  }
+
   // ---------- boot -----------------------------------------------------------
   async function boot() {
     bind();
@@ -3092,6 +3126,10 @@
       // snapshot (so symbol list is populated from holdings + watchlist).
       setTimeout(refreshFunding, 1500);
       applyLaunchTab();
+      // Morning briefing: first open of the day → Jarvis generates a
+      // 3-sentence overnight summary and pushes it as a proactive bubble.
+      // Tied to localStorage so it fires exactly once per UTC day per device.
+      setTimeout(() => maybeMorningBriefing(), 4000);
       setInterval(refreshWatchlist, 30000);
       setInterval(refreshTransactions, 60000);
       setInterval(refreshMarket, 5 * 60 * 1000);

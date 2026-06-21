@@ -142,6 +142,7 @@
       '    </div>' +
       '    <div class="ai-actions">' +
       '      <button class="icon-btn ai-mic-btn" id="ai-mic-btn" title="Push to talk (Web Speech)">🎙</button>' +
+      '      <button class="icon-btn" id="ai-briefing-btn" title="Morning briefing — overnight summary">☀</button>' +
       '      <button class="icon-btn" id="ai-clear-btn" title="Clear conversation">⌫</button>' +
       '      <button class="icon-btn" id="ai-settings-btn" title="API key settings">⚙</button>' +
       '      <button class="icon-btn" id="ai-close-btn" title="Close (Esc)">✕</button>' +
@@ -177,6 +178,14 @@
     wrap.querySelector('#ai-close-btn').addEventListener('click', close);
     wrap.querySelector('#ai-clear-btn').addEventListener('click', clearConversation);
     wrap.querySelector('#ai-settings-btn').addEventListener('click', openSettings);
+    var briefingBtn = wrap.querySelector('#ai-briefing-btn');
+    if (briefingBtn) {
+      briefingBtn.addEventListener('click', function () {
+        if (window.churnlence && window.churnlence.requestMorningBriefing) {
+          window.churnlence.requestMorningBriefing();
+        }
+      });
+    }
     if (!speechSupported()) {
       dom.mic.style.display = 'none';
     } else {
