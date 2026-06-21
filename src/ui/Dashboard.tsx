@@ -1,5 +1,6 @@
 import { useState } from 'react';
 import { formatPrice, formatSignedPct } from '../core/format';
+import { YELLOW_BAND_PCT } from '../core/signal';
 import type { CoinState } from '../core/types';
 import { COINS } from '../data/coins';
 import { ZONE_COLOR } from '../theme/tokens';
@@ -12,6 +13,55 @@ function decimalsFor(coinId: string): number {
 }
 function coingeckoIdFor(coinId: string): string {
   return COINS.find((c) => c.id === coinId)?.coingeckoId ?? coinId;
+}
+
+// Half-range (in %) the distance meter spans on each side of the EMA before the
+// marker pins to an edge. Wide enough to keep the ±2% band visually meaningful.
+const METER_RANGE = 8;
+
+/** Glanceable position of price relative to the 200 EMA, with the ±2% yellow
+ *  band marked and the EMA at center. Turns "+2.1%" into something scannable. */
+function DistanceMeter({ distancePct, zone }: { distancePct: number; zone: CoinState['zone'] }) {
+  const toPct = (v: number) => ((Math.max(-METER_RANGE, Math.min(METER_RANGE, v)) + METER_RANGE) / (2 * METER_RANGE)) * 100;
+  const markerLeft = toPct(distancePct);
+  const bandLeft = toPct(-YELLOW_BAND_PCT);
+  const bandRight = toPct(YELLOW_BAND_PCT);
+  return (
+    <div
+      style={{ position: 'relative', height: 8, marginTop: 10, borderRadius: 4, background: 'var(--ok-border)' }}
+      aria-hidden
+    >
+      {/* ±band */}
+      <div
+        style={{
+          position: 'absolute',
+          left: `${bandLeft}%`,
+          width: `${bandRight - bandLeft}%`,
+          top: 0,
+          bottom: 0,
+          background: 'rgba(245, 166, 35, 0.22)',
+          borderRadius: 4,
+        }}
+      />
+      {/* EMA center line */}
+      <div style={{ position: 'absolute', left: '50%', top: -2, bottom: -2, width: 1, background: 'var(--ok-muted)' }} />
+      {/* price marker */}
+      <div
+        style={{
+          position: 'absolute',
+          left: `${markerLeft}%`,
+          top: '50%',
+          width: 10,
+          height: 10,
+          borderRadius: '50%',
+          background: ZONE_COLOR[zone],
+          transform: 'translate(-50%, -50%)',
+          boxShadow: '0 0 0 2px var(--ok-surface)',
+          transition: 'left 0.4s ease',
+        }}
+      />
+    </div>
+  );
 }
 
 function CoinRow({ s, onClick }: { s: CoinState; onClick: () => void }) {
@@ -61,17 +111,29 @@ function CoinRow({ s, onClick }: { s: CoinState; onClick: () => void }) {
         <span>RSI {Math.round(s.rsi)}</span>
         <span className={s.trend === 'BULLISH' ? 'ok-bullish' : 'ok-bearish'}>{s.trend}</span>
       </div>
+      <DistanceMeter distancePct={s.distancePct} zone={s.zone} />
     </div>
   );
+}
+
+/** Most actionable first: pending intraday crosses pinned on top, then ordered
+ *  by proximity to the EMA (closest = most likely to flip next). */
+function byActionability(a: CoinState, b: CoinState): number {
+  const ap = a.pendingFlip ? 0 : 1;
+  const bp = b.pendingFlip ? 0 : 1;
+  if (ap !== bp) return ap - bp;
+  return Math.abs(a.distancePct) - Math.abs(b.distancePct);
 }
 
 export default function Dashboard({ api }: { api: OverkillApi }) {
   const [selected, setSelected] = useState<string | null>(null);
   const selectedState = api.states.find((s) => s.coinId === selected);
+  const aboveCount = api.states.filter((s) => s.trend === 'BULLISH').length;
+  const sorted = [...api.states].sort(byActionability);
 
   return (
     <>
-      <RegimeBanner regime={api.regime} />
+      <RegimeBanner regime={api.regime} aboveCount={aboveCount} total={api.states.length} />
 
       {selectedState && (
         <div className="ok-card" style={{ padding: 12, marginBottom: 16 }}>
@@ -92,9 +154,14 @@ export default function Dashboard({ api }: { api: OverkillApi }) {
       {api.states.length === 0 ? (
         <p className="ok-muted">No data yet — coins need ≥200 daily closes to compute the EMA.</p>
       ) : (
-        api.states.map((s) => (
-          <CoinRow key={s.coinId} s={s} onClick={() => setSelected(s.coinId)} />
-        ))
+        <>
+          <div className="ok-muted" style={{ fontSize: '0.72rem', margin: '0 2px 10px', letterSpacing: '0.02em' }}>
+            Sorted by proximity to a flip · ◌ pending crosses on top
+          </div>
+          {sorted.map((s) => (
+            <CoinRow key={s.coinId} s={s} onClick={() => setSelected(s.coinId)} />
+          ))}
+        </>
       )}
     </>
   );
