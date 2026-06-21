@@ -11,6 +11,7 @@
     "preview": "vite preview",
     "test": "vitest run",
     "test:watch": "vitest",
+    "verify:live": "vite-node scripts/live-check.ts",
     "lint": "tsc --noEmit",
     "cap:sync": "cap sync",
     "cap:android": "cap open android"

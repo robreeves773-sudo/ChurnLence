@@ -106,9 +106,23 @@ npm run cap:android
 `npm test` is the real proof: a simulated crossover fixture produces **exactly
 one ntfy POST and one local notification**, dedupe **survives a simulated
 restart**, pending vs confirmed logic holds, quiet hours behave, message strings
-match the spec exactly, and the no-trade guard passes. Live HTTP verification
-(actual CoinGecko fetch + ntfy push) must run from a device/network that allows
-`api.coingecko.com` and `ntfy.sh`.
+match the spec exactly, and the no-trade guard passes. This same suite runs in
+**CI** (`.github/workflows/ci.yml`) on every push and PR, alongside the
+type-check and build.
+
+For **live** verification against real market data, run the bundled harness —
+it drives the exact production `evaluate()` core with the real CoinGecko
+fetchers (read-only) and prints a per-coin state table plus any fired alerts:
+
+```bash
+npm run verify:live                       # dry run: fetch + evaluate + print
+npm run verify:live -- --coins btc,eth    # limit to specific coins
+npm run verify:live -- --ntfy my-topic    # also POST accepted alerts to ntfy.sh
+```
+
+It must run from a device/network that allows `api.coingecko.com` (and `ntfy.sh`
+when using `--ntfy`); it exits non-zero with a clear message if the feed is
+unreachable.
 
 ## Theme
 A dark, **ZBCN/Zebec-inspired** palette — near-black background with a neon
