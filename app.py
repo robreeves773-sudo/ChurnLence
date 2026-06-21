@@ -192,6 +192,53 @@ COINGECKO_MAP: dict[str, str] = {
     "AAVE-USD": "aave",
 }
 
+# Crypto.com Exchange — primary source for crypto quotes.  Public API, no
+# auth, real-time, no rate limits in practice.  Falls back to yfinance /
+# CoinGecko / demo when a symbol isn't available there.
+#
+# Most pairs trade against USDT on Crypto.com (1 USDT ≈ 1 USD).  Some major
+# pairs use USD as quote (e.g., BTC_USD); we try USDT first because liquidity
+# is higher and the price feed is identical for our purposes.
+CRYPTOCOM_MAP: dict[str, str] = {
+    "BTC-USD":  "BTC_USDT",
+    "ETH-USD":  "ETH_USDT",
+    "SOL-USD":  "SOL_USDT",
+    "XRP-USD":  "XRP_USDT",
+    "ADA-USD":  "ADA_USDT",
+    "DOGE-USD": "DOGE_USDT",
+    "LINK-USD": "LINK_USDT",
+    "AVAX-USD": "AVAX_USDT",
+    "DOT-USD":  "DOT_USDT",
+    "VET-USD":  "VET_USDT",
+    "ALGO-USD": "ALGO_USDT",
+    "XLM-USD":  "XLM_USDT",
+    "HBAR-USD": "HBAR_USDT",
+    "SHIB-USD": "SHIB_USDT",
+    "CRO-USD":  "CRO_USDT",
+    "FLR-USD":  "FLR_USDT",
+    "BONK-USD": "BONK_USDT",
+    "PEPE-USD": "PEPE_USDT",
+    "FLOKI-USD":"FLOKI_USDT",
+    "WIF-USD":  "WIF_USDT",
+    "PENGU-USD":"PENGU_USDT",
+    "JUP-USD":  "JUP_USDT",
+    "PYTH-USD": "PYTH_USDT",
+    "JTO-USD":  "JTO_USDT",
+    "RNDR-USD": "RNDR_USDT",
+    "TAO-USD":  "TAO_USDT",
+    "FET-USD":  "FET_USDT",
+    "TIA-USD":  "TIA_USDT",
+    "SUI-USD":  "SUI_USDT",
+    "SEI-USD":  "SEI_USDT",
+    "INJ-USD":  "INJ_USDT",
+    "ARB-USD":  "ARB_USDT",
+    "OP-USD":   "OP_USDT",
+    "APT-USD":  "APT_USDT",
+    "NEAR-USD": "NEAR_USDT",
+    "LDO-USD":  "LDO_USDT",
+    "AAVE-USD": "AAVE_USDT",
+}
+
 # Preset baskets — one-click add. Crypto-only after the refocus.
 PRESET_BASKETS: dict[str, dict] = {
     "majors": {
@@ -437,10 +484,13 @@ class Quote:
     rvol_label: str               # "low" | "normal" | "high" | "unusual"
     stop_loss: float | None       # Overkill MA-style: ~3% below EMA21
     stop_atr: float | None        # Volatility-aware: price - 2×ATR
-    signal: str                   # BUY / SELL / HOLD
-    signal_reason: str
-    history: list[dict]
-    fetched_at: str
+    bid: float | None = None      # best bid (Crypto.com only)
+    ask: float | None = None      # best ask
+    source: str = "yfinance"      # which feed served this quote
+    signal: str = "HOLD"          # BUY / SELL / HOLD
+    signal_reason: str = ""
+    history: list[dict] | None = None
+    fetched_at: str = ""
 
     def as_dict(self) -> dict:
         return self.__dict__
@@ -865,6 +915,103 @@ def _coingecko_history(coin_id: str, days: int = 365) -> tuple[list[str], list[f
     return dates, highs, lows, closes, volumes, "USD", name
 
 
+def _crypto_com_history(instrument: str, mode: str = "swing") -> tuple[list[str], list[float], list[float], list[float], list[float], str, str] | None:
+    """Pull OHLCV from Crypto.com Exchange's public REST endpoint.
+
+    Free, no auth, sub-second response.  Returns up to 300 candles per call,
+    enough for EMA200 on the daily timeframe.
+
+      mode="swing" → 1D candles  (300 days back; covers EMA200)
+      mode="day"   → 15m candles (300 bars = ~3 days back; covers EMA50)
+
+    Crypto.com returns oldest-first when sorted by timestamp, so we sort
+    explicitly to match the ascending order the rest of the pipeline expects.
+    """
+    tf = "1D" if mode == "swing" else "15m"
+    url = (
+        "https://api.crypto.com/exchange/v1/public/get-candlestick"
+        f"?instrument_name={instrument}&timeframe={tf}&count=300"
+    )
+    try:
+        req = urllib.request.Request(url, headers={"User-Agent": "ChurnLence/1.0"})
+        with urllib.request.urlopen(req, timeout=10) as resp:
+            payload = json.loads(resp.read())
+    except (urllib.error.URLError, urllib.error.HTTPError, TimeoutError, json.JSONDecodeError) as exc:
+        app.logger.warning("Crypto.com candlestick failed for %s: %s", instrument, exc)
+        return None
+    result = (payload or {}).get("result") or payload or {}
+    bars = result.get("data") or []
+    if len(bars) < 30:
+        return None
+    # Bars come back in chronological order from the API — sort to be safe.
+    def _ts(b):
+        t = b.get("timestamp")
+        if isinstance(t, str):
+            try:
+                return datetime.fromisoformat(t.replace("Z", "+00:00")).timestamp()
+            except ValueError:
+                return 0
+        try: return float(t) / 1000.0
+        except (TypeError, ValueError): return 0
+    bars.sort(key=_ts)
+    fmt = "%Y-%m-%d" if mode == "swing" else "%Y-%m-%d %H:%M"
+    dates, opens, highs, lows, closes, volumes = [], [], [], [], [], []
+    for b in bars:
+        try:
+            o = float(b["open"]); h = float(b["high"])
+            l = float(b["low"]);  c = float(b["close"])
+            v_usd = float(b.get("volume_usd") or 0.0) or float(b.get("volume") or 0.0) * c
+        except (KeyError, TypeError, ValueError):
+            continue
+        ts = b.get("timestamp")
+        if isinstance(ts, str):
+            try:
+                d = datetime.fromisoformat(ts.replace("Z", "+00:00")).strftime(fmt)
+            except ValueError:
+                d = ts[:16]
+        else:
+            try:
+                d = datetime.fromtimestamp(float(ts) / 1000.0, tz=timezone.utc).strftime(fmt)
+            except (TypeError, ValueError):
+                d = ""
+        dates.append(d); opens.append(o); highs.append(h); lows.append(l)
+        closes.append(c); volumes.append(v_usd)
+    if len(closes) < 30:
+        return None
+    # Strip the USDT suffix to get a friendly display name (BTC, ETH, SOL...)
+    name = instrument.split("_")[0]
+    return dates, highs, lows, closes, volumes, "USD", name
+
+
+def _crypto_com_ticker(instrument: str) -> dict | None:
+    """Real-time last/bid/ask snapshot.  Used to refresh price between
+    candlestick refreshes so the live tick is always sub-second-fresh."""
+    url = ("https://api.crypto.com/exchange/v1/public/get-ticker"
+           f"?instrument_name={instrument}")
+    try:
+        req = urllib.request.Request(url, headers={"User-Agent": "ChurnLence/1.0"})
+        with urllib.request.urlopen(req, timeout=6) as resp:
+            payload = json.loads(resp.read())
+    except (urllib.error.URLError, urllib.error.HTTPError, TimeoutError, json.JSONDecodeError) as exc:
+        app.logger.debug("Crypto.com ticker failed for %s: %s", instrument, exc)
+        return None
+    result = (payload or {}).get("result") or {}
+    items = result.get("data") or []
+    if not items:
+        return None
+    row = items[0] if isinstance(items, list) else items
+    try:
+        return {
+            "last":  float(row.get("a") or row.get("last") or 0) or None,
+            "best_bid": float(row.get("b") or row.get("best_bid") or 0) or None,
+            "best_ask": float(row.get("k") or row.get("best_ask") or 0) or None,
+            "high":  float(row.get("h") or row.get("high") or 0) or None,
+            "low":   float(row.get("l") or row.get("low")  or 0) or None,
+        }
+    except (TypeError, ValueError):
+        return None
+
+
 def fetch_quote(symbol: str, force: bool = False, mode: str = "swing") -> Quote | None:
     """Pull a quote with EMA/ATR/signal in either swing or day-trade flavour.
 
@@ -900,7 +1047,18 @@ def fetch_quote(symbol: str, force: bool = False, mode: str = "swing") -> Quote 
 
     volumes: list[float] = []
 
-    if not DEMO_MODE:
+    # Crypto.com Exchange — primary source for crypto.  yfinance frequently
+    # rate-limits the *-USD tickers, so we go to a sub-second public API first
+    # whenever the symbol is in our crypto map.
+    used_crypto_com = False
+    cc_instrument = CRYPTOCOM_MAP.get(symbol) if not DEMO_MODE else None
+    if cc_instrument:
+        cc = _crypto_com_history(cc_instrument, mode=mode)
+        if cc:
+            dates, highs, lows, closes, volumes, currency, name = cc
+            used_crypto_com = True
+
+    if not closes and not DEMO_MODE:
         try:
             ticker = yf.Ticker(symbol)
             hist = ticker.history(period=yf_period, interval=yf_interval, auto_adjust=False)
@@ -943,7 +1101,23 @@ def fetch_quote(symbol: str, force: bool = False, mode: str = "swing") -> Quote 
     change = price - prev_close
     change_pct = (change / prev_close * 100) if prev_close else 0.0
 
-    if not DEMO_MODE and not used_coingecko:
+    bid_px: float | None = None
+    ask_px: float | None = None
+    source = "demo" if DEMO_MODE else ("crypto.com" if used_crypto_com
+                else "coingecko" if used_coingecko else "yfinance")
+    if used_crypto_com and cc_instrument:
+        # Real-time tick from Crypto.com so the price is sub-second-fresh
+        # between candle refreshes.  Also gives us bid/ask spread which we
+        # surface on the chart tab.
+        tick = _crypto_com_ticker(cc_instrument)
+        if tick and tick.get("last"):
+            price = tick["last"]
+            change = price - prev_close
+            change_pct = (change / prev_close * 100) if prev_close else 0.0
+        if tick:
+            bid_px = tick.get("best_bid")
+            ask_px = tick.get("best_ask")
+    elif not DEMO_MODE and not used_coingecko:
         try:
             fast = ticker.fast_info
             live = float(getattr(fast, "last_price", None) or fast.get("lastPrice") or 0) or None
@@ -1071,6 +1245,9 @@ def fetch_quote(symbol: str, force: bool = False, mode: str = "swing") -> Quote 
         rvol_label=rvol_label,
         stop_loss=stop_ma,
         stop_atr=stop_atr,
+        bid=round(bid_px, 6) if bid_px else None,
+        ask=round(ask_px, 6) if ask_px else None,
+        source=source,
         signal=signal,
         signal_reason=reason,
         history=history,

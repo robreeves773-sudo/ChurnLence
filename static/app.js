@@ -1136,9 +1136,23 @@
       const bbHtml = q.bb_pct != null
         ? `<span class="rsi-chip ${bbLabel}" title="Bollinger %B (0=lower band, 1=upper). Width ${q.bb_width?.toFixed(3)} (${q.bb_width < 0.04 ? 'squeeze!' : 'normal'})">%B ${(q.bb_pct * 100).toFixed(0)}</span>`
         : '';
+      // Live bid/ask spread chip — only present when Crypto.com served the
+      // quote (yfinance + CoinGecko don't expose L1 book).
+      let spreadHtml = '';
+      if (q.bid != null && q.ask != null && q.ask > q.bid) {
+        const spreadPct = ((q.ask - q.bid) / q.ask) * 100;
+        const tight = spreadPct < 0.05;
+        spreadHtml = `<span class="rsi-chip ${tight ? 'oversold' : 'neutral'}"
+          title="Best bid ${fmtMoneySm(q.bid)} · Best ask ${fmtMoneySm(q.ask)} · spread ${spreadPct.toFixed(3)}%">
+          BID ${fmtMoneySm(q.bid)} / ASK ${fmtMoneySm(q.ask)}
+        </span>`;
+      }
+      const srcHtml = q.source && q.source !== 'demo'
+        ? `<span class="rsi-chip neutral" title="Data source for this quote">${q.source}</span>`
+        : '';
       $('#chart-sub').innerHTML =
         `<span class="${chg >= 0 ? 'up' : 'down'}" style="color:${chg>=0?'var(--success)':'var(--danger)'}">${chg>=0?'▲':'▼'} ${fmtPct(chg)}</span>
-         &nbsp; EMA21 ${fmtMoneySm(q.ema21)} · Stop MA ${fmtMoneySm(q.stop_loss)} · Stop ATR ${fmtMoneySm(q.stop_atr)} · ATR% ${q.atr_pct != null ? fmtPct(q.atr_pct) : '—'} · ${rsiHtml} ${macdHtml} ${bbHtml} · <span class="sig-chip ${(q.signal||'hold').toLowerCase()}">${q.signal}</span>`;
+         &nbsp; EMA21 ${fmtMoneySm(q.ema21)} · Stop MA ${fmtMoneySm(q.stop_loss)} · Stop ATR ${fmtMoneySm(q.stop_atr)} · ATR% ${q.atr_pct != null ? fmtPct(q.atr_pct) : '—'} · ${rsiHtml} ${macdHtml} ${bbHtml} ${spreadHtml} ${srcHtml} · <span class="sig-chip ${(q.signal||'hold').toLowerCase()}">${q.signal}</span>`;
       // Fetch news for the symbol (non-blocking)
       refreshNews(state.chartSymbol);
 
