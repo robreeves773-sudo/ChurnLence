@@ -1,0 +1,840 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover, user-scalable=no" />
+  <meta name="mobile-web-app-capable" content="yes" />
+  <meta name="apple-mobile-web-app-capable" content="yes" />
+  <meta name="apple-mobile-web-app-title" content="ChurnLence" />
+  <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent" />
+  <meta name="theme-color" content="#ff6a00" />
+  <meta name="color-scheme" content="dark" />
+  <link rel="manifest" href="/static/manifest.webmanifest" />
+  <link rel="icon" type="image/png" sizes="64x64" href="/static/favicon.png" />
+  <link rel="apple-touch-icon" sizes="180x180" href="/static/apple-touch-icon.png" />
+  <title>ChurnLence · Overkill Portfolio Tracker</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com" />
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500;700&display=swap" rel="stylesheet" />
+  <script src="/static/chart.umd.min.js"></script>
+  <script>
+    // Fallback to CDN if local copy failed to load
+    if (typeof Chart === 'undefined') {
+      document.write('<script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.1/dist/chart.umd.min.js"><\/script>');
+    }
+  </script>
+  <link rel="stylesheet" href="/static/app.css" />
+  <link rel="stylesheet" href="/static/js/cmdk/cmdk.css" />
+  <link rel="stylesheet" href="/static/js/ai/ai.css" />
+</head>
+<body>
+  <div class="bg-grid"></div>
+  <div class="bg-slash"></div>
+  <div class="bg-glow bg-glow-cyan"></div>
+  <div class="bg-glow bg-glow-magenta"></div>
+
+  <header class="topbar">
+    <div class="brand">
+      <div class="brand-mark" title="斬月 · Zangetsu — Slaying Moon">
+        <!-- Tensa Zangetsu — vertical black blade, cyan reishi edge, orange handle wrap -->
+        <svg viewBox="0 0 40 40" width="30" height="30" aria-hidden="true">
+          <defs>
+            <linearGradient id="bladeGrad" x1="0" x2="1" y1="0" y2="0">
+              <stop offset="0" stop-color="#0a0a10"/>
+              <stop offset="0.85" stop-color="#1a1a22"/>
+              <stop offset="1" stop-color="#00d4ff"/>
+            </linearGradient>
+            <linearGradient id="hiltGrad" x1="0" x2="0" y1="0" y2="1">
+              <stop offset="0" stop-color="#ff6a00"/>
+              <stop offset="1" stop-color="#cc1f33"/>
+            </linearGradient>
+            <filter id="bladeGlow"><feGaussianBlur stdDeviation="0.6"/></filter>
+          </defs>
+          <!-- Cyan energy aura -->
+          <path d="M19 4 L21 4 L21.5 26 L18.5 26 Z" fill="#00d4ff" opacity="0.5" filter="url(#bladeGlow)"/>
+          <!-- Black blade -->
+          <path d="M19 4 L21 4 L21 26 L19 26 Z" fill="url(#bladeGrad)"/>
+          <!-- Cross-guard / tsuba -->
+          <rect x="14" y="25" width="12" height="2" fill="#1a1a22" stroke="#ff6a00" stroke-width="0.4"/>
+          <!-- Wrapped hilt (orange) -->
+          <rect x="18.5" y="27" width="3" height="9" fill="url(#hiltGrad)"/>
+          <!-- Hilt wrap lines -->
+          <line x1="18.5" y1="29" x2="21.5" y2="29" stroke="#0a0a10" stroke-width="0.4"/>
+          <line x1="18.5" y1="31" x2="21.5" y2="31" stroke="#0a0a10" stroke-width="0.4"/>
+          <line x1="18.5" y1="33" x2="21.5" y2="33" stroke="#0a0a10" stroke-width="0.4"/>
+          <!-- Pommel -->
+          <circle cx="20" cy="36.5" r="1.2" fill="#ff6a00"/>
+        </svg>
+      </div>
+      <div class="brand-text">
+        <h1>ChurnLence <span class="brand-kanji">卍解</span></h1>
+        <span class="brand-sub">Bankai · cut through the market</span>
+      </div>
+    </div>
+
+    <div class="mode-toggle" role="radiogroup" aria-label="Trading mode" id="mode-toggle"
+         title="SHIKAI 始解 = swing trading (daily candles, 9/21/50/200 EMAs).&#10;BANKAI 卍解 = day trading (15-min candles, tighter stops, faster signals).">
+      <button type="button" data-mode="swing" class="active" role="radio" aria-checked="true">
+        SHIKAI<span class="kanji">始解</span>
+      </button>
+      <button type="button" data-mode="day"   role="radio" aria-checked="false">
+        BANKAI<span class="kanji">卍解</span>
+      </button>
+    </div>
+
+    <nav class="tabs" role="tablist" aria-label="Sections">
+      <button class="tab active" data-tab="overview" role="tab">
+        <span class="tab-key">1</span>Overview
+      </button>
+      <button class="tab" data-tab="holdings" role="tab">
+        <span class="tab-key">2</span>Holdings
+      </button>
+      <button class="tab" data-tab="charts" role="tab">
+        <span class="tab-key">3</span>Charts
+      </button>
+      <button class="tab" data-tab="signals" role="tab">
+        <span class="tab-key">4</span>Signals
+      </button>
+      <button class="tab" data-tab="watchlist" role="tab">
+        <span class="tab-key">5</span>Watchlist
+      </button>
+      <button class="tab" data-tab="planner" role="tab">
+        <span class="tab-key">6</span>Planner
+      </button>
+      <button class="tab" data-tab="backtest" role="tab">
+        <span class="tab-key">7</span>Backtest
+      </button>
+      <button class="tab" data-tab="scanner" role="tab">
+        <span class="tab-key">8</span>Scanner
+      </button>
+      <div class="tab-underline" aria-hidden="true"></div>
+    </nav>
+
+    <div class="topbar-actions">
+      <div class="portfolio-picker">
+        <select id="portfolio-select" aria-label="Portfolio"></select>
+        <button class="icon-btn" id="new-portfolio-btn" title="New portfolio">+</button>
+        <button class="icon-btn" id="portfolio-menu-btn" title="Portfolio settings">⋯</button>
+        <div class="menu" id="portfolio-menu" hidden>
+          <button type="button" data-pm="rename">Rename portfolio</button>
+          <button type="button" data-pm="alerts">Email alerts…</button>
+          <button type="button" data-pm="import">Import CSV…</button>
+          <button type="button" data-pm="export">Export CSV</button>
+          <button type="button" data-pm="delete" class="danger">Delete portfolio</button>
+        </div>
+      </div>
+      <button class="icon-btn sound-btn" id="sound-toggle" title="Toggle sound (M)">🔔</button>
+      <button class="icon-btn notify-btn" id="notify-toggle" title="Enable desktop notifications for BUY/SELL">🖥</button>
+      <div class="live-pill" id="live-pill" data-state="off">
+        <span class="live-dot"></span><span class="live-label">OFFLINE</span>
+      </div>
+    </div>
+  </header>
+
+  <section class="ticker-tape" id="ticker-tape" aria-hidden="true">
+    <div class="ticker-track" id="ticker-track"></div>
+  </section>
+
+  <main class="main">
+    <!-- OVERVIEW TAB ------------------------------------------------------- -->
+    <section class="panel active" data-panel="overview">
+      <article class="market-regime glass-card" id="market-regime" hidden>
+        <div class="mr-cell mr-fg" id="mr-fg">
+          <div class="mr-label">Fear &amp; Greed</div>
+          <div class="mr-value"><span id="mr-fg-num">—</span><span class="mr-fg-tag" id="mr-fg-label">—</span></div>
+          <div class="mr-sub" id="mr-fg-delta">—</div>
+        </div>
+        <div class="mr-cell">
+          <div class="mr-label">BTC Dominance</div>
+          <div class="mr-value" id="mr-btc-dom">—</div>
+          <div class="mr-sub" id="mr-eth-dom">—</div>
+        </div>
+        <div class="mr-cell">
+          <div class="mr-label">Total Market Cap</div>
+          <div class="mr-value" id="mr-mcap">—</div>
+          <div class="mr-sub" id="mr-mcap-chg">—</div>
+        </div>
+        <div class="mr-cell mr-regime">
+          <div class="mr-label">Regime read</div>
+          <div class="mr-value" id="mr-regime">—</div>
+          <div class="mr-sub">based on F&amp;G + BTC dominance</div>
+        </div>
+      </article>
+
+      <div class="hero-grid" id="hero-grid">
+        <article class="hero-card accent-cyan">
+          <div class="hero-label">Portfolio value</div>
+          <div class="hero-value" id="hero-value"><span class="skeleton-line" style="width:140px;height:28px"></span></div>
+          <div class="hero-sub"><span id="hero-updated"><span class="skeleton-line" style="width:80px;height:11px"></span></span></div>
+        </article>
+        <article class="hero-card" id="hero-day-card">
+          <div class="hero-label">Day P/L</div>
+          <div class="hero-value" id="hero-day"><span class="skeleton-line" style="width:110px;height:28px"></span></div>
+          <div class="hero-sub" id="hero-day-pct"><span class="skeleton-line" style="width:60px;height:11px"></span></div>
+        </article>
+        <article class="hero-card" id="hero-total-card">
+          <div class="hero-label">Total P/L</div>
+          <div class="hero-value" id="hero-total"><span class="skeleton-line" style="width:130px;height:28px"></span></div>
+          <div class="hero-sub" id="hero-total-pct"><span class="skeleton-line" style="width:60px;height:11px"></span></div>
+        </article>
+        <article class="hero-card accent-magenta">
+          <div class="hero-label">Top mover</div>
+          <div class="hero-value hero-value-sm" id="hero-mover"><span class="skeleton-line" style="width:90px;height:18px"></span></div>
+          <div class="hero-sub" id="hero-laggard"><span class="skeleton-line" style="width:120px;height:11px"></span></div>
+        </article>
+      </div>
+
+      <article class="glass-card" id="heatmap-card" style="margin-top:18px;">
+        <header class="card-head">
+          <h2>Heatmap</h2>
+          <span class="card-sub">Tile size = position value · color = 24h change · click for chart</span>
+        </header>
+        <div class="heatmap" id="heatmap"></div>
+      </article>
+
+      <div class="sub-grid">
+        <article class="glass-card">
+          <header class="card-head">
+            <h2>Allocation</h2>
+            <span class="card-sub">By position value</span>
+          </header>
+          <div class="alloc-wrap">
+            <canvas id="alloc-chart" height="220"></canvas>
+            <ul class="alloc-legend" id="alloc-legend"></ul>
+          </div>
+        </article>
+
+        <article class="glass-card">
+          <header class="card-head">
+            <h2>Overkill read</h2>
+            <span class="card-sub">Signal distribution</span>
+          </header>
+          <div class="signal-bars" id="signal-bars">
+            <div class="sig-row"><span class="sig-chip buy">BUY</span><div class="bar"><div class="bar-fill buy" id="bar-buy"></div></div><span class="sig-count" id="count-buy">0</span></div>
+            <div class="sig-row"><span class="sig-chip hold">HOLD</span><div class="bar"><div class="bar-fill hold" id="bar-hold"></div></div><span class="sig-count" id="count-hold">0</span></div>
+            <div class="sig-row"><span class="sig-chip sell">SELL</span><div class="bar"><div class="bar-fill sell" id="bar-sell"></div></div><span class="sig-count" id="count-sell">0</span></div>
+          </div>
+          <p class="overkill-tip">
+            Overkill rule of thumb: <em>buy near the rising 21 EMA, trim when
+            extended &gt;8% above it, stop-loss just beneath.</em>
+          </p>
+        </article>
+      </div>
+
+      <article class="glass-card funding-card" id="funding-card" style="margin-top:18px;" hidden>
+        <header class="card-head">
+          <h2>Perp funding rates <span class="card-sub" style="font-weight:normal;">(per 8h on Binance/Bybit, hourly on Hyperliquid)</span></h2>
+          <span class="card-sub" id="funding-as-of">—</span>
+        </header>
+        <div class="funding-grid" id="funding-grid"></div>
+      </article>
+
+      <article class="glass-card actions-card" id="actions-card" style="margin-top:18px;">
+        <header class="card-head">
+          <h2>Today's actions</h2>
+          <span class="card-sub">Live BUY / SELL signals across your holdings &amp; watchlist</span>
+        </header>
+        <div class="actions-wrap" id="actions-wrap">
+          <div class="empty-row" style="padding:18px 8px;">All clear — every position is on HOLD right now.</div>
+        </div>
+      </article>
+
+      <article class="glass-card risk-card" id="risk-card" style="margin-top:18px;">
+        <header class="card-head">
+          <h2>Concentration risk</h2>
+          <span class="card-sub">Herfindahl-Hirschman Index</span>
+        </header>
+        <div class="risk-grid">
+          <div class="risk-stat">
+            <div class="risk-stat-label">HHI</div>
+            <div class="risk-stat-value" id="hhi-value">—</div>
+            <div class="risk-grade" id="hhi-grade">—</div>
+          </div>
+          <div class="risk-meter-wrap">
+            <div class="risk-meter">
+              <div class="risk-meter-fill" id="hhi-fill"></div>
+              <div class="risk-meter-mark" style="left:15%"><span>1500</span></div>
+              <div class="risk-meter-mark" style="left:25%"><span>2500</span></div>
+            </div>
+            <div class="risk-labels">
+              <span>Diversified</span><span>Moderate</span><span>Concentrated</span>
+            </div>
+          </div>
+          <ul class="risk-warnings" id="hhi-warnings"><li class="empty">No single-name risks detected.</li></ul>
+        </div>
+      </article>
+
+      <article class="glass-card" id="correlation-card" style="margin-top:18px;" hidden>
+        <header class="card-head">
+          <h2>Correlation</h2>
+          <span class="card-sub" id="corr-sub">Pearson over last 30 daily returns. Above 0.85 = same trade.</span>
+        </header>
+        <div id="corr-grid"></div>
+        <p class="overkill-tip" id="corr-warn" hidden></p>
+      </article>
+    </section>
+
+    <!-- HOLDINGS TAB ------------------------------------------------------- -->
+    <section class="panel" data-panel="holdings">
+      <div class="holdings-head">
+        <h2>Holdings</h2>
+        <div class="holdings-actions">
+          <div class="preset-row compact" id="preset-row-inline"></div>
+          <button class="ghost-btn" id="import-csv-btn" title="Import positions from Fidelity / Schwab / Robinhood CSV export">⤓ Import CSV</button>
+          <button class="primary-btn" id="add-holding-btn">+ Add position</button>
+        </div>
+      </div>
+
+      <div class="table-wrap glass-card">
+        <table class="holdings-table" id="holdings-table">
+          <thead>
+            <tr>
+              <th data-sort="symbol">Symbol</th>
+              <th data-sort="shares" class="num" title="Double-click a shares cell to edit">Shares</th>
+              <th data-sort="cost_basis" class="num" title="Double-click the avg cost cell to edit">Avg cost</th>
+              <th data-sort="price" class="num">Last</th>
+              <th data-sort="change_pct" class="num">Day</th>
+              <th data-sort="value" class="num">Value</th>
+              <th data-sort="pl" class="num">P/L $</th>
+              <th data-sort="pl_pct" class="num">P/L %</th>
+              <th title="Overkill signal — BUY near rising 21 EMA, SELL when extended 8%+ above, HOLD otherwise">Signal</th>
+              <th class="num" title="MA stop (Overkill-style): ~3% under the 21 EMA">Stop MA</th>
+              <th class="num" title="Volatility stop: current price − 2 × ATR(14)">Stop ATR</th>
+              <th class="num" title="ATR(14) as % of price — higher = noisier">ATR%</th>
+              <th></th>
+            </tr>
+          </thead>
+          <tbody id="holdings-body">
+            <tr class="empty-row"><td colspan="13">No positions yet — add one to begin.</td></tr>
+          </tbody>
+        </table>
+        <!-- Mobile card stack — hidden on desktop, shown ≤760px -->
+        <div class="holdings-cards" id="holdings-cards"></div>
+      </div>
+    </section>
+
+    <!-- CHARTS TAB --------------------------------------------------------- -->
+    <section class="panel" data-panel="charts">
+      <div class="charts-head">
+        <h2>Chart</h2>
+        <select id="chart-symbol-select" aria-label="Symbol"></select>
+      </div>
+      <div class="glass-card chart-card">
+        <div class="chart-meta" id="chart-meta">
+          <div class="chart-meta-main"><span id="chart-price">—</span><span class="chart-symbol" id="chart-symbol-label">—</span></div>
+          <div class="chart-meta-sub" id="chart-sub">—</div>
+        </div>
+        <canvas id="detail-chart" height="380"></canvas>
+        <div class="chart-legend">
+          <span><i class="dot" style="background:#ff6a00"></i>EMA 9</span>
+          <span><i class="dot" style="background:#ffffff"></i>EMA 21</span>
+          <span><i class="dot" style="background:#00d4ff"></i>EMA 50</span>
+          <span><i class="dot" style="background:#ff8aae"></i>EMA 200</span>
+          <span><i class="dot dashed" style="background:#b388ff"></i>BB (20, 2σ)</span>
+          <span><i class="dot dashed" style="background:#cc1f33"></i>Stop-loss</span>
+        </div>
+      </div>
+      <article class="glass-card depth-card" id="depth-card" style="margin-top:14px;" hidden>
+        <header class="card-head">
+          <h2>Order book depth</h2>
+          <span class="card-sub" id="depth-sub">Top 20 bids / asks · Crypto.com</span>
+        </header>
+        <div class="depth-grid" id="depth-grid"></div>
+      </article>
+      <article class="glass-card news-card" id="news-card" style="margin-top:14px;" hidden>
+        <header class="card-head">
+          <h2>Latest news</h2>
+          <span class="card-sub" id="news-symbol">—</span>
+        </header>
+        <ul class="news-list" id="news-list"></ul>
+      </article>
+    </section>
+
+    <!-- SIGNALS TAB -------------------------------------------------------- -->
+    <section class="panel" data-panel="signals">
+      <div class="holdings-head"><h2>Signal feed</h2><span class="card-sub" id="signal-feed-count">0 events</span></div>
+      <ul class="signal-feed glass-card" id="signal-feed">
+        <li class="empty">Waiting for signal transitions…</li>
+      </ul>
+      <div class="holdings-head" style="margin-top:22px;">
+        <h2>Active theses &amp; alert rules</h2>
+        <span class="card-sub" id="theses-rules-sub">Custom rules wired into the watcher</span>
+      </div>
+      <article class="glass-card" id="theses-rules-card" style="padding:14px 18px;">
+        <div id="theses-rules-host">
+          <div class="empty-row" style="padding:8px 0;">
+            Nothing custom yet — click 📋 on a holding (Custom thesis) or 🔔 on a
+            watchlist tile (Alert rules) to add some.
+          </div>
+        </div>
+      </article>
+      <div class="holdings-head" style="margin-top:22px;">
+        <h2>Realized P/L</h2>
+        <span class="card-sub" id="realized-sub">Sells closed so far</span>
+      </div>
+      <article class="glass-card" id="transactions-card">
+        <div class="table-wrap">
+          <table class="holdings-table" id="transactions-table">
+            <thead>
+              <tr>
+                <th>Date</th><th>Symbol</th><th>Method</th>
+                <th class="num">Shares</th><th class="num">Cost</th><th class="num">Sell</th>
+                <th class="num">Proceeds</th><th class="num">Realized P/L</th>
+              </tr>
+            </thead>
+            <tbody id="transactions-body">
+              <tr class="empty-row"><td colspan="8">No sells recorded yet — close a position from Holdings to start the tax log.</td></tr>
+            </tbody>
+          </table>
+        </div>
+      </article>
+    </section>
+
+    <!-- WATCHLIST TAB ------------------------------------------------------ -->
+    <section class="panel" data-panel="watchlist">
+      <div class="holdings-head">
+        <h2>Watchlist</h2>
+        <div style="display:flex; align-items:center; gap:10px; flex-wrap:wrap;">
+          <button type="button" class="primary-btn" id="watch-add-coin-btn"
+                  title="Focus the symbol input">+ Add coin</button>
+          <form class="watch-form" id="watch-form">
+            <input type="text" id="watch-input" placeholder="Symbol (e.g. NVDA, BTC-USD)" />
+            <button type="submit" class="primary-btn">Watch</button>
+          </form>
+        </div>
+      </div>
+      <p class="card-sub" style="margin: -6px 0 12px; color: var(--ink-mute);">
+        Click the 🔔 on any tile to add price / movement / volume alerts —
+        they fire even when the tab is closed.
+      </p>
+      <div class="glass-card watch-grid" id="watch-grid">
+        <div class="empty-row">Add a symbol to start watching.</div>
+      </div>
+    </section>
+
+    <!-- BACKTEST TAB ------------------------------------------------------- -->
+    <section class="panel" data-panel="backtest">
+      <div class="holdings-head">
+        <h2>Backtest</h2>
+        <span class="card-sub">Replay the Overkill EMA signal on a single symbol — no prediction claims, just arithmetic.</span>
+      </div>
+      <div class="planner-grid">
+        <article class="glass-card">
+          <header class="card-head"><h2>Inputs</h2></header>
+          <form id="backtest-form" class="planner-form">
+            <label>Symbol
+              <input name="symbol" placeholder="AAPL / SPY / BTC-USD" autocomplete="off" required />
+            </label>
+            <label>Starting cash ($)
+              <input name="starting_cash" type="number" step="any" min="1" value="10000" required />
+            </label>
+            <label>Years of history
+              <select name="years">
+                <option value="0.25">3 months</option>
+                <option value="0.5">6 months</option>
+                <option value="1" selected>1 year</option>
+                <option value="2">2 years</option>
+                <option value="3">3 years</option>
+              </select>
+            </label>
+            <div class="form-error" id="backtest-error"></div>
+            <div class="form-actions" style="grid-column: span 2;">
+              <button type="submit" class="primary-btn">Run backtest</button>
+            </div>
+          </form>
+        </article>
+        <article class="glass-card" id="backtest-summary" hidden>
+          <header class="card-head"><h2 id="bt-symbol">—</h2><span class="card-sub" id="bt-window">—</span></header>
+          <div class="planner-numbers">
+            <div><span class="n-lbl">Strategy return</span><span class="n-val" id="bt-strat">—</span></div>
+            <div><span class="n-lbl">Buy-and-hold</span><span class="n-val" id="bt-bh">—</span></div>
+            <div><span class="n-lbl">Out-performance</span><span class="n-val" id="bt-diff">—</span></div>
+            <div><span class="n-lbl">Final equity</span><span class="n-val" id="bt-final">—</span></div>
+            <div><span class="n-lbl">Round trips</span><span class="n-val" id="bt-trips">—</span></div>
+            <div><span class="n-lbl">Win rate</span><span class="n-val" id="bt-winrate">—</span></div>
+          </div>
+          <p class="planner-note">Signals act on each daily close. No slippage, no fees, no taxes.</p>
+        </article>
+      </div>
+      <article class="glass-card chart-card" id="backtest-chart-card" hidden style="margin-top:18px;">
+        <header class="card-head"><h2>Equity curve</h2><span class="card-sub">Strategy vs. buy-and-hold</span></header>
+        <canvas id="backtest-chart" height="260"></canvas>
+      </article>
+      <article class="glass-card" id="backtest-trades-card" hidden style="margin-top:18px;">
+        <header class="card-head"><h2>Trade log</h2><span class="card-sub" id="bt-trades-count">—</span></header>
+        <div class="table-wrap">
+          <table class="holdings-table">
+            <thead><tr><th>Date</th><th>Action</th><th class="num">Price</th><th class="num">Shares</th><th class="num">Value</th></tr></thead>
+            <tbody id="backtest-trades-body"></tbody>
+          </table>
+        </div>
+      </article>
+    </section>
+
+    <!-- SCANNER TAB -------------------------------------------------------- -->
+    <section class="panel" data-panel="scanner">
+      <div class="holdings-head">
+        <h2>Memecoin scanner</h2>
+        <span class="card-sub">Trending Solana pools via GeckoTerminal · refreshes every 60s · this is gambling, not investing</span>
+      </div>
+      <div class="scanner-controls glass-card">
+        <div class="scanner-row">
+          <div class="scanner-tabs" id="scanner-view-tabs" role="tablist">
+            <button type="button" data-view="trending" class="active" role="tab" aria-selected="true">🔥 Trending</button>
+            <button type="button" data-view="new"      role="tab" aria-selected="false">✨ New launches</button>
+          </div>
+          <div class="scanner-filters">
+            <label>Network
+              <select id="scanner-network">
+                <option value="solana" selected>Solana</option>
+                <option value="base">Base</option>
+                <option value="eth">Ethereum</option>
+                <option value="bsc">BSC</option>
+                <option value="arbitrum">Arbitrum</option>
+              </select>
+            </label>
+            <label>Min liquidity
+              <select id="scanner-minliq">
+                <option value="5000">$5K</option>
+                <option value="25000" selected>$25K</option>
+                <option value="100000">$100K</option>
+                <option value="500000">$500K</option>
+              </select>
+            </label>
+            <button type="button" class="ghost-btn" id="scanner-refresh" title="Refresh now">↻ Refresh</button>
+          </div>
+        </div>
+        <p class="scanner-warn">
+          ⚠ <strong>This is a casino floor, not a strategy.</strong>
+          Most low-MC tokens go to zero in days. Use small position sizes, set a stop, take profits early.
+          Click any row to research it on DexScreener / GeckoTerminal before buying.
+        </p>
+      </div>
+      <article class="glass-card" style="margin-top:14px;">
+        <div class="table-wrap">
+          <table class="holdings-table" id="scanner-table">
+            <thead>
+              <tr>
+                <th>Token</th>
+                <th class="num" title="Buy/sell pressure ratio">Score</th>
+                <th class="num">Price</th>
+                <th class="num">1h</th>
+                <th class="num">6h</th>
+                <th class="num">24h</th>
+                <th class="num" title="Total trading volume in last 24h">Vol 24h</th>
+                <th class="num" title="DEX liquidity">Liq</th>
+                <th class="num" title="Buys / sells (last 24h)">Buys / Sells</th>
+                <th>DEX</th>
+                <th></th>
+              </tr>
+            </thead>
+            <tbody id="scanner-body">
+              <tr class="empty-row"><td colspan="11">Click <strong>Refresh</strong> or switch tabs to load.</td></tr>
+            </tbody>
+          </table>
+        </div>
+      </article>
+    </section>
+
+    <!-- PLANNER TAB -------------------------------------------------------- -->
+    <section class="panel" data-panel="planner">
+      <div class="holdings-head">
+        <h2>Position-size planner</h2>
+        <span class="card-sub">Size trades by volatility, not by feel</span>
+      </div>
+      <div class="planner-grid">
+        <article class="glass-card">
+          <header class="card-head"><h2>Trade inputs</h2></header>
+          <form id="planner-form" class="planner-form">
+            <label>Symbol
+              <input name="symbol" placeholder="AAPL / BTC-USD" autocomplete="off" required />
+            </label>
+            <label>Account size ($)
+              <input name="account" type="number" step="any" min="1" value="10000" required />
+            </label>
+            <label>Risk per trade (%)
+              <input name="risk_pct" type="number" step="any" min="0.01" max="100" value="1" required />
+            </label>
+            <label>Stop method
+              <select name="stop_method">
+                <option value="atr">ATR (volatility)</option>
+                <option value="ma">MA (EMA21 × 0.97, Overkill)</option>
+                <option value="custom">Custom price</option>
+              </select>
+            </label>
+            <label data-stop="atr">ATR multiplier
+              <input name="atr_multiplier" type="number" step="0.1" min="0.5" value="2" />
+            </label>
+            <label data-stop="custom" hidden>Custom stop price
+              <input name="custom_stop" type="number" step="any" min="0" />
+            </label>
+            <div class="form-error" id="planner-error"></div>
+            <div class="form-actions" style="grid-column: span 2;">
+              <button type="submit" class="primary-btn">Calculate</button>
+            </div>
+          </form>
+        </article>
+
+        <article class="glass-card planner-result" id="planner-result" hidden>
+          <header class="card-head">
+            <h2 id="planner-sym">—</h2>
+            <span class="sig-chip hold" id="planner-signal">—</span>
+          </header>
+          <div class="planner-numbers">
+            <div><span class="n-lbl">Shares</span><span class="n-val" id="pr-shares">—</span></div>
+            <div><span class="n-lbl">Position value</span><span class="n-val" id="pr-value">—</span></div>
+            <div><span class="n-lbl">% of account</span><span class="n-val" id="pr-pct">—</span></div>
+            <div><span class="n-lbl">Entry</span><span class="n-val" id="pr-entry">—</span></div>
+            <div><span class="n-lbl">Stop</span><span class="n-val" id="pr-stop">—</span></div>
+            <div><span class="n-lbl">Stop distance</span><span class="n-val" id="pr-dist">—</span></div>
+            <div><span class="n-lbl">Risk at stop</span><span class="n-val" id="pr-risk">—</span></div>
+            <div><span class="n-lbl">ATR / ATR%</span><span class="n-val" id="pr-atr">—</span></div>
+          </div>
+          <p class="planner-note" id="planner-note"></p>
+        </article>
+      </div>
+
+      <article class="glass-card" id="kelly-card" style="margin-top:18px;">
+        <header class="card-head">
+          <h2>Kelly criterion sizing</h2>
+          <span class="card-sub">Based on your closed sells. Tells you the math-optimal bet size given your win-rate.</span>
+        </header>
+        <div id="kelly-body">
+          <p class="planner-note" style="color:var(--ink-mute)">Close at least 5 positions (use the Sell button on Holdings) and Kelly will compute here.</p>
+        </div>
+        <button type="button" class="ghost-btn" id="kelly-refresh-btn" style="margin-top:8px;">Recompute</button>
+      </article>
+    </section>
+  </main>
+
+  <footer class="footer">
+    <span>Crypto via Crypto.com Exchange (real-time, free) · yfinance fallback for stocks &amp; ETFs (~15 min delay)</span>
+    <span class="kbd-hint">Shortcuts · <kbd>1</kbd>–<kbd>6</kbd> tabs · <kbd>N</kbd> new · <kbd>M</kbd> mute</span>
+  </footer>
+
+  <!-- ADD HOLDING MODAL -->
+  <div class="modal-backdrop" id="add-holding-modal" hidden>
+    <div class="modal glass-card">
+      <header class="modal-head"><h3>Add position</h3>
+        <button class="icon-btn" data-close>✕</button></header>
+
+      <div class="preset-row" id="preset-row"></div>
+
+      <form id="add-holding-form" class="form-grid">
+        <label class="full ac-wrap">Symbol
+          <div class="ac-input-row">
+            <input name="symbol" required placeholder="Start typing (AAPL / BTC-USD / Bitcoin)"
+                   autocomplete="off" spellcheck="false" id="symbol-input" />
+            <span class="ac-preview" id="symbol-preview" aria-live="polite"></span>
+          </div>
+          <ul class="ac-list" id="symbol-suggestions" hidden></ul>
+        </label>
+        <label>Shares
+          <input name="shares" type="number" step="any" min="0.0000001" required />
+        </label>
+        <label>Cost basis (avg price)
+          <div class="field-with-action">
+            <input name="cost_basis" type="number" step="any" min="0" required id="cost-basis-input" />
+            <button type="button" class="link-btn" id="use-current-price" title="Use current price">Use last</button>
+          </div>
+        </label>
+        <label class="full">Note
+          <input name="note" placeholder="optional (e.g. 'core', 'swing')" autocomplete="off" />
+        </label>
+        <div class="form-error" id="add-holding-error"></div>
+        <div class="form-actions">
+          <button type="button" class="ghost-btn" data-close>Cancel</button>
+          <button type="submit" class="primary-btn">Add</button>
+        </div>
+      </form>
+    </div>
+  </div>
+
+  <!-- NEW PORTFOLIO MODAL -->
+  <div class="modal-backdrop" id="new-portfolio-modal" hidden>
+    <div class="modal glass-card">
+      <header class="modal-head"><h3>New portfolio</h3>
+        <button class="icon-btn" data-close>✕</button></header>
+      <form id="new-portfolio-form" class="form-grid">
+        <label class="full">Name<input name="name" required placeholder="e.g. Swing · Long-term" autocomplete="off" /></label>
+        <div class="form-error" id="new-portfolio-error"></div>
+        <div class="form-actions">
+          <button type="button" class="ghost-btn" data-close>Cancel</button>
+          <button type="submit" class="primary-btn">Create</button>
+        </div>
+      </form>
+    </div>
+  </div>
+
+  <!-- SELL MODAL -->
+  <div class="modal-backdrop" id="sell-modal" hidden>
+    <div class="modal glass-card">
+      <header class="modal-head"><h3>Close position</h3><button class="icon-btn" data-close>✕</button></header>
+      <form id="sell-form" class="form-grid">
+        <div class="full sell-head">
+          <span class="sym-big" id="sell-symbol">—</span>
+          <span class="card-sub" id="sell-holdings">—</span>
+        </div>
+        <label>Shares to sell
+          <input name="shares" type="number" step="any" min="0.0000001" required />
+        </label>
+        <label>Sell price
+          <div class="field-with-action">
+            <input name="sell_price" type="number" step="any" min="0" required id="sell-price-input" />
+            <button type="button" class="link-btn" id="sell-use-last">Use last</button>
+          </div>
+        </label>
+        <label class="full">Cost method
+          <select name="method">
+            <option value="FIFO">FIFO — first-in first-out (default, IRS)</option>
+            <option value="LIFO">LIFO — last-in first-out</option>
+          </select>
+        </label>
+        <div class="form-error" id="sell-error"></div>
+        <div class="form-actions">
+          <button type="button" class="ghost-btn" data-close>Cancel</button>
+          <button type="submit" class="primary-btn">Record sell</button>
+        </div>
+      </form>
+    </div>
+  </div>
+
+  <!-- IMPORT CSV MODAL -->
+  <div class="modal-backdrop" id="import-csv-modal" hidden>
+    <div class="modal glass-card" style="max-width:620px;">
+      <header class="modal-head"><h3>Import from CSV</h3><button class="icon-btn" data-close>✕</button></header>
+      <form id="import-csv-form" class="form-grid">
+        <div class="full" style="color:var(--ink-mute); font-size:13px;">
+          Works with exports from <strong>Fidelity</strong>, <strong>Schwab</strong>,
+          <strong>Robinhood</strong>, <strong>Vanguard</strong> — we match columns
+          fuzzily. Minimum: <code>Symbol</code> + <code>Shares</code>.
+          If cost basis is missing we use the current price.
+        </div>
+        <label class="full">CSV file
+          <input type="file" name="file" id="import-csv-file" accept=".csv,text/csv" />
+        </label>
+        <label class="full">…or paste CSV text
+          <textarea name="csv" id="import-csv-text" rows="6" placeholder="Symbol,Shares,Average Cost
+AAPL,25,180
+NVDA,15,120"></textarea>
+        </label>
+        <div class="form-error" id="import-csv-error"></div>
+        <div class="form-actions">
+          <button type="button" class="ghost-btn" data-close>Cancel</button>
+          <button type="submit" class="primary-btn">Import</button>
+        </div>
+      </form>
+    </div>
+  </div>
+
+  <!-- RENAME PORTFOLIO MODAL -->
+  <div class="modal-backdrop" id="rename-portfolio-modal" hidden>
+    <div class="modal glass-card">
+      <header class="modal-head"><h3>Rename portfolio</h3><button class="icon-btn" data-close>✕</button></header>
+      <form id="rename-portfolio-form" class="form-grid">
+        <label class="full">New name
+          <input name="name" required autocomplete="off" />
+        </label>
+        <div class="form-error" id="rename-portfolio-error"></div>
+        <div class="form-actions">
+          <button type="button" class="ghost-btn" data-close>Cancel</button>
+          <button type="submit" class="primary-btn">Rename</button>
+        </div>
+      </form>
+    </div>
+  </div>
+
+  <!-- ALERTS MODAL -->
+  <div class="modal-backdrop" id="alerts-modal" hidden>
+    <div class="modal glass-card">
+      <header class="modal-head"><h3>Email alerts</h3><button class="icon-btn" data-close>✕</button></header>
+      <form id="alerts-form" class="form-grid">
+        <div class="full" style="color:var(--ink-mute); font-size:13px;">
+          Two ways to get notified — pick either or both. Checks run every
+          5 min server-side, so this works even when your browser is closed.
+        </div>
+        <label class="full">Email address
+          <input name="email" type="email" required placeholder="you@example.com" />
+        </label>
+        <label class="full" style="display:flex; flex-direction:row; align-items:center; gap:10px;">
+          <input name="enabled" type="checkbox" style="width:auto;" />
+          <span>Email me on every BUY / SELL signal transition</span>
+        </label>
+        <label class="full" style="display:flex; flex-direction:row; align-items:center; gap:10px;">
+          <input name="daily_digest" type="checkbox" style="width:auto;" />
+          <span>Send me a daily summary email with all signals</span>
+        </label>
+        <label>Digest time (UTC hour)
+          <select name="digest_hour_utc">
+            <option value="11">11:00 UTC (~7am ET)</option>
+            <option value="13" selected>13:00 UTC (~9am ET)</option>
+            <option value="14">14:00 UTC (~10am ET)</option>
+            <option value="20">20:00 UTC (~4pm ET, post-close)</option>
+            <option value="22">22:00 UTC (~6pm ET)</option>
+          </select>
+        </label>
+        <div class="form-actions" style="grid-column: span 1; justify-content: flex-start;">
+          <button type="button" class="ghost-btn" id="digest-preview-btn" title="See what today's email would look like">Preview today's digest</button>
+          <button type="button" class="ghost-btn" id="digest-send-btn" title="Send the digest right now (requires SMTP)">Send now</button>
+        </div>
+        <div class="full" id="digest-preview-out" hidden style="background:rgba(0,0,0,0.25); padding:12px; border-radius:8px; max-height:240px; overflow:auto; font-family:'JetBrains Mono', monospace; font-size:12px; white-space:pre-wrap; color:var(--ink-dim);"></div>
+
+        <hr class="full" style="border:0; border-top:1px solid var(--line); margin:6px 0;"/>
+        <div class="full" style="color:var(--ink-mute); font-size:13px;">
+          <strong>Discord webhook</strong> — for memecoin trades where every second matters.
+          In your Discord server: <em>Channel settings → Integrations → Webhooks → New Webhook → Copy URL</em>.
+        </div>
+        <label class="full">Discord webhook URL
+          <input name="discord_webhook" type="url" placeholder="https://discord.com/api/webhooks/…" autocomplete="off" />
+        </label>
+        <label class="full" style="display:flex; flex-direction:row; align-items:center; gap:10px;">
+          <input name="discord_enabled" type="checkbox" style="width:auto;" />
+          <span>Send signal flips to Discord (in addition to / instead of email)</span>
+        </label>
+        <div class="form-actions" style="grid-column: span 1; justify-content: flex-start;">
+          <button type="button" class="ghost-btn" id="discord-test-btn" title="Send a test ping right now">Test ping</button>
+        </div>
+
+        <hr class="full" style="border:0; border-top:1px solid var(--line); margin:6px 0;"/>
+        <div class="full" style="color:var(--ink-mute); font-size:13px;">
+          <strong>Telegram bot</strong> — direct DM to your phone, free, instant.
+          Setup (2 min):
+          (1) chat with <em>@BotFather</em> → <code>/newbot</code> → copy the token,
+          (2) chat with <em>@userinfobot</em> → copy your numeric chat id,
+          (3) send any message to your new bot first (otherwise Telegram blocks it).
+        </div>
+        <label class="full">Bot token
+          <input name="telegram_bot_token" type="text" placeholder="123456:ABC-DEF…"
+                 autocomplete="off" spellcheck="false" />
+        </label>
+        <label>Chat id
+          <input name="telegram_chat_id" type="text" placeholder="e.g. 123456789" autocomplete="off" />
+        </label>
+        <label class="full" style="display:flex; flex-direction:row; align-items:center; gap:10px;">
+          <input name="telegram_enabled" type="checkbox" style="width:auto;" />
+          <span>Send signal flips to Telegram</span>
+        </label>
+        <div class="form-actions" style="grid-column: span 1; justify-content: flex-start;">
+          <button type="button" class="ghost-btn" id="telegram-test-btn" title="Send a test DM right now">Test ping</button>
+        </div>
+
+        <div class="form-error" id="alerts-status"></div>
+        <div class="form-actions">
+          <button type="button" class="ghost-btn" data-close>Close</button>
+          <button type="submit" class="primary-btn">Save</button>
+        </div>
+      </form>
+    </div>
+  </div>
+
+  <div class="toast-host" id="toast-host"></div>
+
+  <!-- Cmd-K command palette (Linear/Raycast-style) — vanilla JS, no deps -->
+  <script src="/static/js/cmdk/fuzzy.js"></script>
+  <script src="/static/js/cmdk/commands.js"></script>
+  <script src="/static/js/cmdk/cmdk.js"></script>
+  <!-- AI Copilot — Claude Haiku research/explanation copilot (Wave 7) -->
+  <script src="/static/js/ai/ai.js"></script>
+  <script src="/static/app.js"></script>
+</body>
+</html>

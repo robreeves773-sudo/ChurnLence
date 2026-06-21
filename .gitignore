@@ -1,0 +1,20 @@
+__pycache__/
+*.pyc
+*.pyo
+.venv/
+venv/
+.env
+portfolio.db
+portfolio.db-journal
+.DS_Store
+.idea/
+.vscode/
+*.log
+
+# PyInstaller — produced by `pyinstaller churnlence.spec` and by the
+# Windows-build GitHub Actions workflow. The .exe is published as a
+# workflow artifact / Release asset, never committed.
+build/
+dist/
+*.manifest
+static/icon.ico

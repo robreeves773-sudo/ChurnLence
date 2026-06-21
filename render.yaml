@@ -1,0 +1,28 @@
+services:
+  - type: web
+    name: churnlence
+    runtime: docker
+    dockerfilePath: ./Dockerfile
+    plan: starter
+    autoDeploy: true
+    healthCheckPath: /api/portfolios
+    envVars:
+      - key: PORT
+        value: "5000"
+      - key: CHURNLENCE_DB
+        value: /data/portfolio.db
+      # Optional: uncomment + set for email alerts on signal transitions
+      # - key: SMTP_HOST
+      #   sync: false
+      # - key: SMTP_PORT
+      #   value: "587"
+      # - key: SMTP_USER
+      #   sync: false
+      # - key: SMTP_PASS
+      #   sync: false
+      # - key: SMTP_FROM
+      #   sync: false
+    disk:
+      name: churnlence-data
+      mountPath: /data
+      sizeGB: 1
