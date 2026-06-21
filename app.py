@@ -2673,6 +2673,114 @@ def jarvis_memory_delete(pid: int, mid: int):
     return jsonify({"ok": True})
 
 
+def _suggest_theses(q: "Quote") -> list[dict]:
+    """Deterministic thesis suggester — looks at the coin's current indicator
+    state and proposes 2-4 sensible buy/sell rule sets the user can adopt or
+    edit.  No LLM involved; purely arithmetic + Overkill heuristics.
+    """
+    out: list[dict] = []
+    if q is None or q.price is None:
+        return out
+    price = float(q.price)
+
+    # 1. EMA21 pullback buy (only if EMA21 is known)
+    if q.ema21:
+        target = round(q.ema21 * 1.005, 6)  # buy within 0.5% above EMA21
+        out.append({
+            "label": "Pullback to EMA21 buy",
+            "name":  f"{q.symbol} EMA21 reclaim",
+            "rationale": f"Buy when price drops back near the 21-day EMA "
+                         f"(${q.ema21:,.4f}); a common Overkill setup.",
+            "buy_rules":  [{"logic": "AND", "conds": [
+                {"indicator": "price",  "op": "lte", "value": target},
+                {"indicator": "ema9",   "op": "gt",  "value": round(q.ema21 * 0.99, 6)},
+            ]}],
+            "sell_rules": [],
+        })
+
+    # 2. Premium / take-profit sell — fires when price extends way above EMA21
+    if q.ema21:
+        out.append({
+            "label": "Premium take-profit",
+            "name":  f"{q.symbol} take profit",
+            "rationale": "Sell when price stretches more than 8% above the 21 "
+                         "EMA — classic Overkill 'sell at a premium' play.",
+            "buy_rules":  [],
+            "sell_rules": [{"logic": "AND", "conds": [
+                {"indicator": "price_vs_ema21", "op": "gt", "value": 8},
+            ]}],
+        })
+
+    # 3. RSI mean-reversion buy
+    if q.rsi is not None:
+        out.append({
+            "label": "RSI oversold buy",
+            "name":  f"{q.symbol} RSI oversold",
+            "rationale": "Buy on a panic dip — RSI under 30 is statistically "
+                         "oversold and often coincides with short-term bottoms.",
+            "buy_rules":  [{"logic": "AND", "conds": [
+                {"indicator": "rsi", "op": "lt", "value": 30},
+            ]}],
+            "sell_rules": [{"logic": "AND", "conds": [
+                {"indicator": "rsi", "op": "gt", "value": 75},
+            ]}],
+        })
+
+    # 4. 24h dip-buy — only if the coin is up at least a bit (avoid pure dumps)
+    chg = q.change_pct or 0
+    if abs(chg) < 50:   # sanity guard against bad data
+        out.append({
+            "label": "24h flush buy",
+            "name":  f"{q.symbol} dip-buy",
+            "rationale": "Buy when the coin is down 15% in 24h — capitulation "
+                         "candle.  Pair with a manual review before acting.",
+            "buy_rules":  [{"logic": "AND", "conds": [
+                {"indicator": "pct_24h", "op": "lt", "value": -15},
+            ]}],
+            "sell_rules": [{"logic": "AND", "conds": [
+                {"indicator": "pct_24h", "op": "gt", "value": 25},
+            ]}],
+        })
+
+    # 5. Volume + sentiment combo (for memecoins specifically)
+    if q.sentiment_pct is not None:
+        out.append({
+            "label": "Crowd-confirmed entry",
+            "name":  f"{q.symbol} sentiment buy",
+            "rationale": f"Sentiment is at {q.sentiment_pct:.0f}%.  Wait for "
+                         "the crowd to confirm before adding (sentiment ≥ 70).",
+            "buy_rules":  [{"logic": "AND", "conds": [
+                {"indicator": "sentiment_pct", "op": "gte", "value": 70},
+                {"indicator": "rvol",          "op": "gte", "value": 1.5},
+            ]}],
+            "sell_rules": [{"logic": "AND", "conds": [
+                {"indicator": "sentiment_pct", "op": "lt", "value": 35},
+            ]}],
+        })
+
+    return out
+
+
+@app.route("/api/portfolios/<int:pid>/thesis-suggest")
+def thesis_suggest(pid: int):
+    symbol = (request.args.get("symbol") or "").upper().strip()
+    if not symbol:
+        return jsonify({"error": "symbol required"}), 400
+    q = fetch_quote(symbol)
+    if q is None:
+        return jsonify({"error": f"no data for {symbol}"}), 404
+    return jsonify({
+        "symbol": symbol,
+        "snapshot": {
+            "price": q.price, "rsi": q.rsi, "ema21": q.ema21,
+            "pct_24h": q.change_pct, "rvol": q.rvol,
+            "sentiment_pct": q.sentiment_pct,
+            "signal": q.signal, "signal_reason": q.signal_reason,
+        },
+        "suggestions": _suggest_theses(q),
+    })
+
+
 def _heuristic_briefing(snap: dict, events: list[dict]) -> str:
     """No-AI-key fallback for the morning briefing.  Pure arithmetic over the
     current snapshot + the last 24h of signal events."""

@@ -2484,10 +2484,14 @@
           <label class="full">Thesis name
             <input name="name" placeholder="e.g. SOL bargain hunt" autocomplete="off" required />
           </label>
-          <div class="full" style="font-size:12px; color:var(--ink-mute); margin: -4px 0 -2px;">
-            Quick templates — click to fill the rule builder, then tweak:
+          <div class="full" style="font-size:12px; color:var(--ink-mute); margin: -4px 0 -2px;
+                                    display:flex; align-items:center; justify-content:space-between; gap:8px;">
+            <span>Quick templates — click to fill the rule builder, then tweak:</span>
+            <button type="button" class="ghost-btn" id="thesis-suggest-btn"
+                    title="Suggest rules based on this coin's current state">✨ Suggest from live data</button>
           </div>
           <div class="full preset-row" id="thesis-templates" style="gap:6px; margin-bottom:6px;"></div>
+          <div class="full" id="thesis-suggestions" style="font-size:12px;"></div>
           <label class="full" style="display:flex; flex-direction:row; align-items:center; gap:10px;">
             <input name="enabled" type="checkbox" style="width:auto;" checked />
             <span>Active — evaluate every 5 min and alert on hits</span>
@@ -2578,6 +2582,58 @@
           thesisGroupBlock('SELL when…', 'sell', tpl.sell);
       });
     }
+
+    // ✨ Suggest: heuristic rule proposals based on the coin's current state.
+    // Renders a small list under the templates; clicking one fills the rule
+    // builder (same UX as templates, just data-driven from /thesis-suggest).
+    thesisModal.querySelector('#thesis-suggest-btn').addEventListener('click', async () => {
+      const sym = thesisModal.dataset.symbol;
+      const host = $('#thesis-suggestions');
+      host.innerHTML = '<em>Reading current setup…</em>';
+      try {
+        const r = await api(`/api/portfolios/${state.currentPortfolioId}/thesis-suggest?symbol=${encodeURIComponent(sym)}`);
+        const sug = r.suggestions || [];
+        if (!sug.length) {
+          host.innerHTML = '<em>No suggestions — try again once the chart has more data.</em>';
+          return;
+        }
+        const snap = r.snapshot || {};
+        const snapLine = [
+          snap.price != null ? `price ${fmtMoneySm(snap.price)}` : null,
+          snap.rsi   != null ? `RSI ${snap.rsi}` : null,
+          snap.ema21 != null ? `EMA21 ${fmtMoneySm(snap.ema21)}` : null,
+          snap.pct_24h != null ? `24h ${snap.pct_24h.toFixed(2)}%` : null,
+          snap.sentiment_pct != null ? `sentiment ${Math.round(snap.sentiment_pct)}%` : null,
+        ].filter(Boolean).join(' · ');
+        host.innerHTML = `
+          <div style="color: var(--ink-mute); margin-bottom: 6px;">
+            Live state: ${snapLine || 'no data yet'} · signal ${snap.signal || '—'}.
+            Click a suggestion to load it into the builder, then tweak before saving.
+          </div>
+          ${sug.map((s, i) => `
+            <button type="button" class="ghost-btn"
+                    data-suggest-idx="${i}"
+                    title="${escapeHtml(s.rationale)}"
+                    style="display:block; width:100%; text-align:left; margin-bottom:4px;">
+              <strong>${escapeHtml(s.label)}</strong>
+              <span style="color: var(--ink-mute); font-size: 11px;"> — ${escapeHtml(s.rationale)}</span>
+            </button>`).join('')}`;
+        $$('[data-suggest-idx]', host).forEach(btn => {
+          btn.addEventListener('click', () => {
+            const s = sug[parseInt(btn.dataset.suggestIdx, 10)];
+            const f = thesisModal.querySelector('#thesis-form');
+            if (!f.elements.name.value.trim()) f.elements.name.value = s.name;
+            $('#thesis-buy-host').innerHTML  = thesisGroupBlock(
+              'BUY when…',  'buy',  (s.buy_rules  && s.buy_rules[0])  || null);
+            $('#thesis-sell-host').innerHTML = thesisGroupBlock(
+              'SELL when…', 'sell', (s.sell_rules && s.sell_rules[0]) || null);
+            host.querySelectorAll('button').forEach(b => b.style.opacity = b === btn ? '1' : '0.55');
+          });
+        });
+      } catch (err) {
+        host.innerHTML = `<span style="color: var(--hollow-red);">${escapeHtml(err.message)}</span>`;
+      }
+    });
 
     // Backtest button: save first (so the thesis has an id), then replay
     // against history.  Shows compact stats inline.
@@ -2696,6 +2752,10 @@
     $('#thesis-sell-host').innerHTML = thesisGroupBlock('SELL when…', 'sell', null);
     $('#thesis-error').textContent = '';
     $('#thesis-existing').innerHTML = '';
+    const sugHost = $('#thesis-suggestions');
+    if (sugHost) sugHost.innerHTML = '';
+    const btHost = $('#thesis-backtest');
+    if (btHost) btHost.innerHTML = '';
     thesisModal.hidden = false;
 
     // Load any existing theses for this symbol — show first as editable
