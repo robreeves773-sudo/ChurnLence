@@ -833,6 +833,48 @@
 
   // ---------- News strip (Charts tab) --------------------------------------
   const _newsCache = {};   // symbol -> { ts, items }
+  // Live order-book depth widget on the Chart tab.  Renders a two-column
+  // horizontal-bar list (bids left/green, asks right/red) with size bars
+  // sized to the deepest level in view.  Hides itself when the symbol has
+  // no Crypto.com mapping (so stocks/ETFs don't show an empty card).
+  async function refreshDepth(symbol) {
+    if (!symbol) return;
+    const card = $('#depth-card');
+    const grid = $('#depth-grid');
+    if (!card || !grid) return;
+    try {
+      const r = await api(`/api/orderbook/${encodeURIComponent(symbol)}?depth=15`);
+      if (!r || !r.bids || !r.asks) { card.hidden = true; return; }
+      card.hidden = false;
+      $('#depth-sub').textContent =
+        `Mid ${fmtMoneySm(r.mid)} · spread ${r.spread_pct}% · top 15 each side`;
+      const allSizes = [...r.bids, ...r.asks].map(b => b[1]);
+      const maxSize = Math.max(...allSizes, 0.0001);
+      const row = (level, side) => {
+        const [px, sz] = level;
+        const pct = (sz / maxSize) * 100;
+        return `
+          <div class="dp-row ${side}">
+            <span class="dp-fill" style="width:${pct.toFixed(1)}%"></span>
+            <span class="dp-px">${fmtMoneySm(px)}</span>
+            <span class="dp-sz">${sz.toLocaleString(undefined, {maximumFractionDigits: 4})}</span>
+          </div>`;
+      };
+      grid.innerHTML = `
+        <div class="dp-col dp-bids">
+          <div class="dp-head"><span>Price</span><span>Size</span></div>
+          ${r.bids.map(b => row(b, 'bid')).join('')}
+        </div>
+        <div class="dp-col dp-asks">
+          <div class="dp-head"><span>Price</span><span>Size</span></div>
+          ${r.asks.map(a => row(a, 'ask')).join('')}
+        </div>`;
+    } catch (err) {
+      // 404 = no Crypto.com mapping for this symbol → hide silently
+      card.hidden = true;
+    }
+  }
+
   async function refreshNews(symbol) {
     if (!symbol) return;
     const card = $('#news-card');
@@ -1200,11 +1242,20 @@
       const srcHtml = q.source && q.source !== 'demo'
         ? `<span class="rsi-chip neutral" title="Data source for this quote">${q.source}</span>`
         : '';
+      const sentLabel = q.sentiment_pct == null ? 'neutral'
+        : q.sentiment_pct >= 70 ? 'oversold'       // green = bullish crowd
+        : q.sentiment_pct <= 35 ? 'overbought'     // red = bearish crowd
+        : 'neutral';
+      const sentHtml = q.sentiment_pct != null
+        ? `<span class="rsi-chip ${sentLabel}" title="CoinGecko community sentiment (% voting bullish, 1h cache)">SENT ${q.sentiment_pct.toFixed(0)}%</span>`
+        : '';
       $('#chart-sub').innerHTML =
         `<span class="${chg >= 0 ? 'up' : 'down'}" style="color:${chg>=0?'var(--success)':'var(--danger)'}">${chg>=0?'▲':'▼'} ${fmtPct(chg)}</span>
-         &nbsp; EMA21 ${fmtMoneySm(q.ema21)} · Stop MA ${fmtMoneySm(q.stop_loss)} · Stop ATR ${fmtMoneySm(q.stop_atr)} · ATR% ${q.atr_pct != null ? fmtPct(q.atr_pct) : '—'} · ${rsiHtml} ${macdHtml} ${bbHtml} ${spreadHtml} ${srcHtml} · <span class="sig-chip ${(q.signal||'hold').toLowerCase()}">${q.signal}</span>`;
+         &nbsp; EMA21 ${fmtMoneySm(q.ema21)} · Stop MA ${fmtMoneySm(q.stop_loss)} · Stop ATR ${fmtMoneySm(q.stop_atr)} · ATR% ${q.atr_pct != null ? fmtPct(q.atr_pct) : '—'} · ${rsiHtml} ${macdHtml} ${bbHtml} ${sentHtml} ${spreadHtml} ${srcHtml} · <span class="sig-chip ${(q.signal||'hold').toLowerCase()}">${q.signal}</span>`;
       // Fetch news for the symbol (non-blocking)
       refreshNews(state.chartSymbol);
+      // Fetch order book depth (non-blocking, hides itself if unsupported)
+      refreshDepth(state.chartSymbol);
 
       const hist = q.history || [];
       const labels = hist.map(h => h.date);
@@ -2359,6 +2410,7 @@
     ['rvol',            'Relative volume (×)'],
     ['atr_pct',         'ATR (%)'],
     ['bb_pct',          'Bollinger %B (0-1)'],
+    ['sentiment_pct',   'CoinGecko sentiment (0-100)'],
   ];
   const THESIS_OPS = [
     ['lt',  '<  less than'],

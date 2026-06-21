@@ -492,6 +492,7 @@ class Quote:
     stop_atr: float | None        # Volatility-aware: price - 2×ATR
     bid: float | None = None      # best bid (Crypto.com only)
     ask: float | None = None      # best ask
+    sentiment_pct: float | None = None  # CoinGecko community sentiment 0..100
     source: str = "yfinance"      # which feed served this quote
     signal: str = "HOLD"          # BUY / SELL / HOLD
     signal_reason: str = ""
@@ -686,6 +687,7 @@ _THESIS_INDICATORS = {
     "atr", "atr_pct", "rvol",
     "pct_24h", "price_vs_ema21",
     "bb_upper", "bb_mid", "bb_lower", "bb_pct", "bb_width",
+    "sentiment_pct",
 }
 _THESIS_OPS = {"lt", "gt", "lte", "gte", "eq",
                "crosses_above", "crosses_below"}
@@ -921,6 +923,42 @@ def _coingecko_history(coin_id: str, days: int = 365) -> tuple[list[str], list[f
     return dates, highs, lows, closes, volumes, "USD", name
 
 
+# Sentiment cache: community-voted up/down% from CoinGecko.  Noisy but
+# directionally useful as a regime filter.  Caches per coin for an hour
+# so we don't hammer the free tier.
+_sentiment_cache: dict[str, tuple[float, dict]] = {}
+_SENTIMENT_TTL = 3600  # 1 hour
+
+
+def _coingecko_sentiment(coin_id: str) -> dict | None:
+    """Pull community sentiment (% bullish) from CoinGecko's /coins/{id}
+    endpoint.  Returns {"sentiment_pct": 0..100, "rank": int|None} or None.
+    """
+    now = time.time()
+    cached = _sentiment_cache.get(coin_id)
+    if cached and (now - cached[0]) < _SENTIMENT_TTL:
+        return cached[1]
+    url = (f"https://api.coingecko.com/api/v3/coins/{coin_id}"
+           "?localization=false&tickers=false&market_data=true"
+           "&community_data=false&developer_data=false&sparkline=false")
+    try:
+        req = urllib.request.Request(url, headers={"User-Agent": "ChurnLence/1.0"})
+        with urllib.request.urlopen(req, timeout=8) as resp:
+            payload = json.loads(resp.read())
+    except (urllib.error.URLError, urllib.error.HTTPError, TimeoutError, json.JSONDecodeError) as exc:
+        app.logger.debug("CoinGecko sentiment failed for %s: %s", coin_id, exc)
+        return None
+    pct = payload.get("sentiment_votes_up_percentage")
+    if pct is None:
+        return None
+    out = {
+        "sentiment_pct": float(pct),
+        "rank": payload.get("market_cap_rank"),
+    }
+    _sentiment_cache[coin_id] = (now, out)
+    return out
+
+
 def _crypto_com_history(instrument: str, mode: str = "swing") -> tuple[list[str], list[float], list[float], list[float], list[float], str, str] | None:
     """Pull OHLCV from Crypto.com Exchange's public REST endpoint.
 
@@ -987,6 +1025,57 @@ def _crypto_com_history(instrument: str, mode: str = "swing") -> tuple[list[str]
     # Strip the USDT suffix to get a friendly display name (BTC, ETH, SOL...)
     name = instrument.split("_")[0]
     return dates, highs, lows, closes, volumes, "USD", name
+
+
+def _crypto_com_orderbook(instrument: str, depth: int = 20) -> dict | None:
+    """Top-N order book from Crypto.com.  Used by the Charts tab's depth
+    widget — gives a real Bloomberg-style read of where liquidity is sitting.
+
+    Response shape (after normalisation):
+      {"bids": [[price, size], ...], "asks": [[price, size], ...],
+       "spread_pct": float, "mid": float}
+    """
+    depth = max(5, min(depth, 150))
+    url = ("https://api.crypto.com/exchange/v1/public/get-book"
+           f"?instrument_name={instrument}&depth={depth}")
+    try:
+        req = urllib.request.Request(url, headers={"User-Agent": "ChurnLence/1.0"})
+        with urllib.request.urlopen(req, timeout=6) as resp:
+            payload = json.loads(resp.read())
+    except (urllib.error.URLError, urllib.error.HTTPError, TimeoutError, json.JSONDecodeError) as exc:
+        app.logger.debug("Crypto.com orderbook failed for %s: %s", instrument, exc)
+        return None
+    result = (payload or {}).get("result") or {}
+    items = result.get("data") or []
+    if not items:
+        return None
+    row = items[0] if isinstance(items, list) else items
+    raw_bids = row.get("bids") or row.get("b") or []
+    raw_asks = row.get("asks") or row.get("a") or []
+    def _parse(side):
+        out = []
+        for entry in side:
+            try:
+                px = float(entry[0]); sz = float(entry[1])
+                if px > 0 and sz > 0:
+                    out.append([px, sz])
+            except (TypeError, ValueError, IndexError):
+                continue
+        return out
+    bids = _parse(raw_bids)
+    asks = _parse(raw_asks)
+    if not bids or not asks:
+        return None
+    best_bid = bids[0][0]
+    best_ask = asks[0][0]
+    mid = (best_bid + best_ask) / 2
+    spread_pct = ((best_ask - best_bid) / mid) * 100 if mid else 0
+    return {
+        "bids": bids, "asks": asks,
+        "best_bid": best_bid, "best_ask": best_ask,
+        "mid": mid, "spread_pct": round(spread_pct, 4),
+        "instrument": instrument,
+    }
 
 
 def _crypto_com_ticker(instrument: str) -> dict | None:
@@ -1109,8 +1198,18 @@ def fetch_quote(symbol: str, force: bool = False, mode: str = "swing") -> Quote 
 
     bid_px: float | None = None
     ask_px: float | None = None
+    sentiment_pct: float | None = None
     source = "demo" if DEMO_MODE else ("crypto.com" if used_crypto_com
                 else "coingecko" if used_coingecko else "yfinance")
+    # Sentiment is a slow-moving regime filter — pull from CoinGecko (cached
+    # 1h) whenever we have a coin mapping, regardless of which feed served
+    # the price/candles.
+    if not DEMO_MODE:
+        cg_id_for_sent = COINGECKO_MAP.get(symbol)
+        if cg_id_for_sent:
+            s = _coingecko_sentiment(cg_id_for_sent)
+            if s:
+                sentiment_pct = s.get("sentiment_pct")
     if used_crypto_com and cc_instrument:
         # Real-time tick from Crypto.com so the price is sub-second-fresh
         # between candle refreshes.  Also gives us bid/ask spread which we
@@ -1253,6 +1352,7 @@ def fetch_quote(symbol: str, force: bool = False, mode: str = "swing") -> Quote 
         stop_atr=stop_atr,
         bid=round(bid_px, 6) if bid_px else None,
         ask=round(ask_px, 6) if ask_px else None,
+        sentiment_pct=sentiment_pct,
         source=source,
         signal=signal,
         signal_reason=reason,
@@ -1652,6 +1752,25 @@ def quote(symbol: str):
     if q is None:
         return jsonify({"error": "not found"}), 404
     return jsonify(q.as_dict())
+
+
+@app.route("/api/orderbook/<symbol>")
+def orderbook(symbol: str):
+    """Top-N order book depth via Crypto.com Exchange.  Returns 404 for any
+    symbol we don't have a Crypto.com mapping for (stocks, ETFs, off-exchange
+    coins) so the frontend can hide the widget gracefully."""
+    symbol = symbol.upper().strip()
+    instrument = CRYPTOCOM_MAP.get(symbol)
+    if not instrument:
+        return jsonify({"error": "no orderbook source for this symbol"}), 404
+    try:
+        depth = max(5, min(int(request.args.get("depth", 20)), 50))
+    except (TypeError, ValueError):
+        depth = 20
+    book = _crypto_com_orderbook(instrument, depth=depth)
+    if book is None:
+        return jsonify({"error": "orderbook fetch failed"}), 502
+    return jsonify(book)
 
 
 @app.route("/api/search")
