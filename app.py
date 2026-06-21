@@ -2083,6 +2083,127 @@ def _backtest_symbol(symbol: str, years: float, starting_cash: float) -> dict:
     }
 
 
+def _backtest_thesis(thesis_row: dict, symbol: str,
+                     starting_cash: float = 10000.0, mode: str = "swing") -> dict:
+    """Replay a custom thesis bar-by-bar against the cached history.
+
+    The thesis evaluator already works against a Quote-shape, so we build a
+    lightweight types.SimpleNamespace per bar with the fields the DSL needs.
+    Buy fires → enter full position at next bar's close.  Sell fires → exit.
+    """
+    from types import SimpleNamespace
+    q = fetch_quote(symbol, force=False, mode=mode)
+    if q is None or not q.history:
+        return {"error": f"{symbol} not found"}
+    bars = q.history
+    if len(bars) < 30:
+        return {"error": "not enough history"}
+
+    cash = float(starting_cash)
+    shares = 0.0
+    trades: list[dict] = []
+    fires: list[dict] = []
+    prev_bar_q = None
+
+    for i, b in enumerate(bars):
+        close = b.get("close") or 0
+        if close <= 0:
+            continue
+        prev_close = (bars[i-1].get("close") if i > 0 else close) or close
+        pct_24h = ((close - prev_close) / prev_close * 100) if prev_close else 0.0
+        # Build the Quote-shape the DSL evaluator expects.  Fields we don't
+        # have in the history bars (rvol, atr_pct, bb_pct, bb_width) are set
+        # to None — `_indicator_value` already handles that gracefully.
+        bar_q = SimpleNamespace(
+            price=close,
+            rsi=b.get("rsi"),
+            ema9=b.get("ema9"), ema21=b.get("ema21"),
+            ema50=b.get("ema50"), ema200=b.get("ema200"),
+            macd=b.get("macd"), macd_signal=b.get("macd_signal"),
+            macd_hist=b.get("macd_hist"),
+            atr=b.get("atr"),  atr_pct=None,
+            rvol=None,
+            bb_upper=b.get("bb_upper"), bb_mid=b.get("bb_mid"),
+            bb_lower=b.get("bb_lower"), bb_pct=None, bb_width=None,
+            change_pct=pct_24h,
+        )
+        hit = _evaluate_thesis(thesis_row, bar_q, prev_bar_q)
+        if hit:
+            sig, name = hit
+            fires.append({"date": b["date"], "signal": sig, "price": round(close, 6),
+                          "rule": name})
+            if sig == "BUY" and shares == 0:
+                shares = cash / close
+                cost = cash
+                cash = 0.0
+                trades.append({"date": b["date"], "action": "BUY",
+                               "price": round(close, 6),
+                               "shares": round(shares, 6),
+                               "cost": round(cost, 2)})
+            elif sig == "SELL" and shares > 0:
+                proceeds = shares * close
+                trades.append({"date": b["date"], "action": "SELL",
+                               "price": round(close, 6),
+                               "shares": round(shares, 6),
+                               "proceeds": round(proceeds, 2)})
+                cash = proceeds
+                shares = 0.0
+        prev_bar_q = bar_q
+
+    final_close = bars[-1]["close"] or 0
+    final_equity = cash + shares * final_close
+    bh_shares = starting_cash / (bars[0]["close"] or 1)
+    bh_equity = bh_shares * final_close
+    strategy_return = (final_equity / starting_cash - 1) * 100
+    bh_return = (bh_equity / starting_cash - 1) * 100
+
+    # Per-round-trip win rate
+    wins = losses = 0
+    for j in range(1, len(trades)):
+        if trades[j]["action"] == "SELL" and trades[j-1]["action"] == "BUY":
+            if trades[j]["price"] > trades[j-1]["price"]:
+                wins += 1
+            else:
+                losses += 1
+
+    return {
+        "symbol": symbol,
+        "thesis_id":   thesis_row.get("id"),
+        "thesis_name": thesis_row.get("name"),
+        "bars": len(bars),
+        "from": bars[0]["date"], "to": bars[-1]["date"],
+        "fires": fires,
+        "fire_count": len(fires),
+        "starting_cash": starting_cash,
+        "final_equity": round(final_equity, 2),
+        "buy_hold_equity": round(bh_equity, 2),
+        "strategy_return_pct": round(strategy_return, 2),
+        "buy_hold_return_pct": round(bh_return, 2),
+        "outperformance_pct": round(strategy_return - bh_return, 2),
+        "round_trips": wins + losses,
+        "wins": wins, "losses": losses,
+        "win_rate_pct": round(wins / (wins + losses) * 100, 1) if (wins + losses) else 0,
+        "trades": trades,
+    }
+
+
+@app.route("/api/portfolios/<int:pid>/theses/<int:tid>/backtest", methods=["POST"])
+def thesis_backtest(pid: int, tid: int):
+    db = get_db()
+    row = db.execute(
+        "SELECT id, symbol, name, buy_rules, sell_rules FROM coin_theses "
+        "WHERE id = ? AND portfolio_id = ?", (tid, pid)
+    ).fetchone()
+    if not row:
+        return jsonify({"error": "thesis not found"}), 404
+    data = request.get_json(force=True, silent=True) or {}
+    cash = float(data.get("starting_cash") or 10000.0)
+    mode = (data.get("mode") or "swing").lower()
+    # _evaluate_thesis expects buy_rules/sell_rules as JSON strings (like
+    # the raw DB row) so pass through unchanged.
+    return jsonify(_backtest_thesis(dict(row), row["symbol"], cash, mode))
+
+
 @app.route("/api/backtest", methods=["POST"])
 def backtest_route():
     data = request.get_json(force=True, silent=True) or {}

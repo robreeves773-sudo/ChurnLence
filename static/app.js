@@ -2384,8 +2384,11 @@
           </label>
           <div class="form-error" id="thesis-error"></div>
           <div class="full" id="thesis-existing" style="font-size:12px; color:var(--ink-mute);"></div>
+          <div class="full" id="thesis-backtest" style="font-size:12px; color:var(--ink-mute);"></div>
           <div class="form-actions">
             <button type="button" class="ghost-btn" data-close>Cancel</button>
+            <button type="button" class="ghost-btn" id="thesis-backtest-btn"
+                    title="Replay this thesis against the last 300 daily bars">▶ Backtest</button>
             <button type="submit" class="primary-btn">Save thesis</button>
           </div>
         </form>
@@ -2460,6 +2463,68 @@
           thesisGroupBlock('SELL when…', 'sell', tpl.sell);
       });
     }
+
+    // Backtest button: save first (so the thesis has an id), then replay
+    // against history.  Shows compact stats inline.
+    thesisModal.querySelector('#thesis-backtest-btn').addEventListener('click', async () => {
+      const sym = thesisModal.dataset.symbol;
+      const f = thesisModal.querySelector('#thesis-form');
+      const buy  = readThesisGroup(thesisModal.querySelector('[data-kind="buy"]'));
+      const sell = readThesisGroup(thesisModal.querySelector('[data-kind="sell"]'));
+      const buys  = buy  ? [buy]  : [];
+      const sells = sell ? [sell] : [];
+      if (!buys.length && !sells.length) {
+        $('#thesis-error').textContent = 'Add at least one buy or sell condition first.';
+        return;
+      }
+      const out = $('#thesis-backtest');
+      out.innerHTML = '<em>Running backtest…</em>';
+      try {
+        // Save (or update) so the backtest endpoint has a row to replay
+        const url = thesisModal.dataset.editing
+          ? `/api/portfolios/${state.currentPortfolioId}/theses/${thesisModal.dataset.editing}`
+          : `/api/portfolios/${state.currentPortfolioId}/theses`;
+        const method = thesisModal.dataset.editing ? 'PATCH' : 'POST';
+        const saved = await api(url, { method, body: JSON.stringify({
+          symbol: sym,
+          name: f.elements.name.value.trim() || `${sym} thesis`,
+          buy_rules: buys, sell_rules: sells,
+          notes: f.elements.notes.value.trim(),
+          enabled: f.elements.enabled.checked,
+        }) });
+        // Find the id we just wrote (PATCH returns the updated list; POST returns same shape)
+        const mine = (saved.theses || []).filter(t => t.symbol === sym);
+        const target = thesisModal.dataset.editing
+          ? mine.find(t => String(t.id) === thesisModal.dataset.editing)
+          : mine[0];   // newest first
+        if (!target) { out.innerHTML = '<em>Could not locate saved thesis.</em>'; return; }
+        thesisModal.dataset.editing = String(target.id);
+        const r = await api(
+          `/api/portfolios/${state.currentPortfolioId}/theses/${target.id}/backtest`,
+          { method: 'POST', body: JSON.stringify({ starting_cash: 10000, mode: state.mode || 'swing' }) }
+        );
+        if (r.error) { out.innerHTML = `<span style="color:var(--hollow-red);">${escapeHtml(r.error)}</span>`; return; }
+        const beat = r.outperformance_pct > 0;
+        out.innerHTML = `
+          <div style="display:flex; gap:14px; flex-wrap:wrap; padding:8px 10px;
+                      border:1px solid var(--line); border-radius:8px;
+                      background: rgba(0,0,0,0.2);">
+            <span><strong>${r.fire_count}</strong> fires over ${r.bars} bars (${r.from} → ${r.to})</span>
+            <span><strong>${r.round_trips}</strong> round-trips · ${r.win_rate_pct}% win rate</span>
+            <span style="color:${beat ? 'var(--lime, #98ff66)' : 'var(--hollow-red, #ff3d7f)'};">
+              ${r.strategy_return_pct >= 0 ? '+' : ''}${r.strategy_return_pct}% vs buy &amp; hold ${r.buy_hold_return_pct >= 0 ? '+' : ''}${r.buy_hold_return_pct}%
+              (${beat ? '+' : ''}${r.outperformance_pct} edge)
+            </span>
+          </div>
+          <div style="font-size:11px; color:var(--ink-mute); margin-top:4px;">
+            ${r.fire_count === 0 ? 'No fires — rule may be too strict.' :
+              r.round_trips === 0 ? 'Only one-sided fires — add the opposite rule to complete trades.' :
+              `${r.wins} wins · ${r.losses} losses on completed trades.`}
+          </div>`;
+      } catch (err) {
+        out.innerHTML = `<span style="color:var(--hollow-red);">${escapeHtml(err.message)}</span>`;
+      }
+    });
 
     thesisModal.querySelector('#thesis-form').addEventListener('submit', async (e) => {
       e.preventDefault();
