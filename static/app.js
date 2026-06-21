@@ -284,6 +284,8 @@
       safeCall('signals', () => renderSignalBars(snap));
     if (shouldRender('allocation', rowsHash))
       safeCall('allocation', () => renderAllocation(snap));
+    if (shouldRender('heatmap', rowsHash))
+      safeCall('heatmap', () => renderHeatmap(snap));
     if (shouldRender('concentration', concHash))
       safeCall('concentration', () => renderConcentration(snap));
     if (shouldRender('ticker', rowsHash))
@@ -1055,6 +1057,54 @@
         <li><span><i style="background:${colors[i]}"></i><span class="sym">${l}</span></span>
             <span class="pct">${(data[i] / total * 100).toFixed(1)}%</span></li>`).join('')
       : '<li><span class="sym" style="color:var(--ink-mute)">No positions</span></li>';
+  }
+
+  // ---------- heatmap -------------------------------------------------------
+  // Bloomberg-style portfolio overview: tile size proportional to position
+  // value, color shaded by 24h change.  CSS grid handles the layout; no
+  // Chart.js dependency.
+  function renderHeatmap(snap) {
+    const host = $('#heatmap');
+    if (!host) return;
+    const rows = (snap.rows || []).filter(r => !r.error && (r.value || 0) > 0);
+    if (!rows.length) {
+      host.innerHTML = '<div class="empty-row" style="padding:18px 8px;">'
+        + 'Heatmap will appear once you add some positions.</div>';
+      return;
+    }
+    const total = rows.reduce((s, r) => s + (r.value || 0), 0) || 1;
+    // Sort largest-first so the eye lands on biggest exposures
+    const sorted = [...rows].sort((a, b) => (b.value || 0) - (a.value || 0));
+    // Color: cyan-green for up, magenta-red for down; opacity scales with magnitude
+    const tile = r => {
+      const pct = r.change_pct || 0;
+      const intensity = Math.min(1, Math.abs(pct) / 10);  // ±10% saturates
+      const bg = pct >= 0
+        ? `rgba(0, 255, 156, ${0.10 + intensity * 0.40})`
+        : `rgba(255, 61, 127, ${0.10 + intensity * 0.40})`;
+      const sigCls = (r.signal || 'hold').toLowerCase();
+      const wPct = ((r.value || 0) / total) * 100;
+      // flex-grow scales tile size to value share; min/max-width prevents
+      // tiny holdings disappearing and huge ones eating the row.
+      return `
+        <div class="heatmap-tile" data-sym="${r.symbol}"
+             style="flex-grow:${wPct.toFixed(2)}; background:${bg};"
+             title="${r.symbol} · ${fmtMoney(r.value)} (${wPct.toFixed(1)}% of book) · ${fmtPct(r.change_pct)}">
+          <div class="hm-sym">${r.symbol}</div>
+          <div class="hm-px">${fmtMoneySm(r.price)}</div>
+          <div class="hm-chg ${pct>=0?'up':'down'}">${pct>=0?'+':''}${pct.toFixed(2)}%</div>
+          <span class="hm-sig sig-chip ${sigCls}">${r.signal || 'HOLD'}</span>
+        </div>`;
+    };
+    host.innerHTML = sorted.map(tile).join('');
+    $$('.heatmap-tile', host).forEach(t => {
+      t.addEventListener('click', () => {
+        state.chartSymbol = t.dataset.sym;
+        const sel = $('#chart-symbol-select');
+        if (sel) sel.value = t.dataset.sym;
+        setTab('charts');
+      });
+    });
   }
 
   // ---------- ticker tape ----------------------------------------------------

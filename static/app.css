@@ -454,6 +454,54 @@ select:focus, input:focus {
 
 .row-thesis { font-size: 12px; padding: 4px 8px; }
 
+/* ---------- Portfolio heatmap (Overview tab) ----------------------------
+   Flexbox lets each tile scale by flex-grow = value-share-%, mimicking the
+   classic "tile sized by exposure" layout from Bloomberg's WEI page. */
+.heatmap {
+  display: flex; flex-wrap: wrap; gap: 6px; padding: 14px;
+  min-height: 200px;
+}
+.heatmap-tile {
+  position: relative;
+  flex: 1 1 110px;
+  min-width: 110px; max-width: 280px; min-height: 86px;
+  padding: 12px 12px 10px;
+  border-radius: 10px;
+  border: 1px solid rgba(255,255,255,0.06);
+  cursor: pointer;
+  transition: transform .12s ease, border-color .12s ease, filter .12s ease;
+  display: flex; flex-direction: column; justify-content: space-between;
+}
+.heatmap-tile:hover {
+  transform: translateY(-2px);
+  border-color: rgba(0, 229, 255, 0.45);
+  filter: brightness(1.18);
+}
+.heatmap-tile .hm-sym {
+  font-family: 'JetBrains Mono', monospace;
+  font-weight: 700; font-size: 15px; color: #fff;
+  text-shadow: 0 1px 4px rgba(0,0,0,0.45);
+}
+.heatmap-tile .hm-px {
+  font-family: 'JetBrains Mono', monospace;
+  font-size: 12px; color: rgba(255,255,255,0.92);
+  margin-top: 4px;
+}
+.heatmap-tile .hm-chg {
+  font-family: 'JetBrains Mono', monospace;
+  font-size: 13px; font-weight: 600;
+  text-shadow: 0 1px 4px rgba(0,0,0,0.5);
+}
+.heatmap-tile .hm-chg.up   { color: #d6ffe8; }
+.heatmap-tile .hm-chg.down { color: #ffd6e2; }
+.heatmap-tile .hm-sig {
+  position: absolute; top: 8px; right: 8px;
+  font-size: 9px; padding: 1px 6px;
+}
+@media (max-width: 600px) {
+  .heatmap-tile { min-width: 90px; flex-basis: 90px; }
+}
+
 /* footer */
 .footer {
   margin: 24px 28px; padding: 16px 0;
