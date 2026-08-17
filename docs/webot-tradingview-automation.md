@@ -108,8 +108,8 @@ use it with TradingView:
 2. **Self-hosted relay** — a small web service you run (e.g. on a $5 VPS or a
    free-tier cloud function) that receives the TradingView webhook, verifies a
    shared secret, and calls the exchange API. No third party, but you own the
-   uptime and security. If you want this, the repo can grow a small Python
-   (FastAPI) relay — say the word.
+   uptime and security. **This repo now includes one — see
+   [`relay/README.md`](../relay/README.md)** for phone-friendly setup.
 
 Either way: create the API key with **trade-only permissions (never
 withdrawal)** and enable IP whitelisting.

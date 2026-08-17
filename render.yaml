@@ -1,0 +1,21 @@
+services:
+  - type: web
+    name: webot-relay
+    runtime: python
+    rootDir: relay
+    plan: free
+    buildCommand: pip install -r requirements.txt
+    startCommand: uvicorn main:app --host 0.0.0.0 --port $PORT
+    envVars:
+      - key: WEBHOOK_SECRET
+        sync: false
+      - key: PIONEX_API_KEY
+        sync: false
+      - key: PIONEX_API_SECRET
+        sync: false
+      - key: LIVE_TRADING
+        value: "false"
+      - key: MAX_ORDER_USD
+        value: "100"
+      - key: DEFAULT_AMOUNT_USD
+        value: "25"
