@@ -3,3 +3,4 @@ __pycache__/
 swing-trader/logs/*
 !swing-trader/logs/.gitkeep
 swing-trader/user_data/data/
+swing-trader/user_data/config-private.json

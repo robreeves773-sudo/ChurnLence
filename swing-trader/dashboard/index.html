@@ -1,0 +1,587 @@
+<!DOCTYPE html>
+<html lang="en" data-theme="dark">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Swing Deck</title>
+<link rel="icon" href="data:image/svg+xml,<svg xmlns=%22http://www.w3.org/2000/svg%22 viewBox=%220 0 100 100%22><text y=%22.9em%22 font-size=%2290%22>📈</text></svg>">
+<style>
+  /* ---- theme tokens (dark is the base: this is a trading desk) ---- */
+  :root {
+    color-scheme: dark;
+    --page:      #0d0d0d;
+    --surface:   #1a1a19;
+    --ink:       #ffffff;
+    --ink-2:     #c3c2b7;
+    --muted:     #898781;
+    --grid:      #2c2c2a;
+    --baseline:  #383835;
+    --border:    rgba(255,255,255,0.10);
+    --accent:    #3987e5;
+    --good:      #0ca30c;
+    --warning:   #fab219;
+    --critical:  #d03b3b;
+    --delta-up:  #0ca30c;
+  }
+  :root[data-theme="light"] {
+    color-scheme: light;
+    --page:      #f9f9f7;
+    --surface:   #fcfcfb;
+    --ink:       #0b0b0b;
+    --ink-2:     #52514e;
+    --muted:     #898781;
+    --grid:      #e1e0d9;
+    --baseline:  #c3c2b7;
+    --border:    rgba(11,11,11,0.10);
+    --accent:    #2a78d6;
+    --delta-up:  #006300;
+  }
+
+  * { box-sizing: border-box; }
+  html, body { margin: 0; padding: 0; }
+  body {
+    background: var(--page);
+    color: var(--ink);
+    font-family: system-ui, -apple-system, "Segoe UI", sans-serif;
+    font-size: 15px;
+    line-height: 1.45;
+    min-height: 100vh;
+  }
+  .wrap { max-width: 1080px; margin: 0 auto; padding: 20px 24px 48px; }
+
+  /* ---- header ---- */
+  header {
+    display: flex; align-items: center; gap: 12px;
+    padding: 6px 0 18px;
+  }
+  .dot {
+    width: 10px; height: 10px; border-radius: 50%;
+    background: var(--muted); flex: none;
+    transition: background .3s;
+  }
+  .dot.ok  { background: var(--good); }
+  .dot.bad { background: var(--critical); }
+  h1 { font-size: 20px; font-weight: 650; margin: 0; letter-spacing: .2px; }
+  .botname { color: var(--muted); font-size: 13px; margin-top: 2px; }
+  .badge {
+    font-size: 11px; font-weight: 700; letter-spacing: .8px;
+    padding: 3px 9px; border-radius: 99px; text-transform: uppercase;
+  }
+  .badge.paper { color: var(--good); border: 1px solid var(--good); }
+  .badge.live  { color: #fff; background: var(--critical); }
+  .spacer { flex: 1; }
+  button.chip {
+    background: var(--surface); color: var(--ink-2);
+    border: 1px solid var(--border); border-radius: 8px;
+    padding: 7px 12px; font: inherit; font-size: 13px; cursor: pointer;
+  }
+  button.chip:hover { color: var(--ink); border-color: var(--muted); }
+
+  /* ---- cards & tiles ---- */
+  .card {
+    background: var(--surface); border: 1px solid var(--border);
+    border-radius: 12px; padding: 18px 20px; margin-bottom: 16px;
+  }
+  .card h2 {
+    margin: 0 0 12px; font-size: 13px; font-weight: 600;
+    color: var(--ink-2); text-transform: uppercase; letter-spacing: .8px;
+  }
+  .tiles {
+    display: grid; gap: 16px; margin-bottom: 16px;
+    grid-template-columns: repeat(auto-fit, minmax(160px, 1fr));
+  }
+  .tile {
+    background: var(--surface); border: 1px solid var(--border);
+    border-radius: 12px; padding: 14px 18px 12px;
+  }
+  .tile .k { font-size: 12px; color: var(--muted); letter-spacing: .4px; }
+  .tile .v { font-size: 26px; font-weight: 650; margin-top: 2px; }
+  .tile .s { font-size: 12.5px; color: var(--ink-2); margin-top: 1px; }
+  .up   { color: var(--delta-up); }
+  .down { color: var(--critical); }
+
+  /* ---- tables ---- */
+  table { width: 100%; border-collapse: collapse; font-size: 14px; }
+  th {
+    text-align: left; font-weight: 600; font-size: 12px; color: var(--muted);
+    padding: 6px 10px; border-bottom: 1px solid var(--grid);
+    text-transform: uppercase; letter-spacing: .5px;
+  }
+  td {
+    padding: 8px 10px; border-bottom: 1px solid var(--grid);
+    font-variant-numeric: tabular-nums;
+  }
+  tr:last-child td { border-bottom: none; }
+  td.num, th.num { text-align: right; }
+  .empty { color: var(--muted); padding: 14px 10px 6px; font-size: 14px; }
+  .scroll { overflow-x: auto; }
+
+  /* ---- chart ---- */
+  #chartbox { position: relative; }
+  #chart { width: 100%; height: 190px; display: block; }
+  #tip {
+    position: absolute; pointer-events: none; display: none;
+    background: var(--surface); border: 1px solid var(--border);
+    border-radius: 8px; padding: 7px 11px; font-size: 12.5px;
+    box-shadow: 0 4px 16px rgba(0,0,0,.25); white-space: nowrap; z-index: 5;
+  }
+  #tip .t1 { color: var(--muted); }
+  #tip .t2 { font-weight: 650; font-variant-numeric: tabular-nums; }
+
+  /* ---- login ---- */
+  #login { max-width: 380px; margin: 60px auto 0; }
+  #login label { display: block; font-size: 13px; color: var(--ink-2); margin: 12px 0 4px; }
+  #login input {
+    width: 100%; padding: 9px 12px; font: inherit;
+    background: var(--page); color: var(--ink);
+    border: 1px solid var(--border); border-radius: 8px;
+  }
+  #login input:focus { outline: 2px solid var(--accent); border-color: transparent; }
+  #login .go {
+    width: 100%; margin-top: 18px; padding: 11px;
+    background: var(--accent); color: #fff; border: none; border-radius: 8px;
+    font: inherit; font-weight: 650; cursor: pointer;
+  }
+  #login .hint { font-size: 12.5px; color: var(--muted); margin-top: 12px; }
+  #login .err { color: var(--critical); font-size: 13px; margin-top: 10px; min-height: 18px; }
+
+  /* ---- toasts ---- */
+  #toasts {
+    position: fixed; right: 18px; bottom: 18px; z-index: 50;
+    display: flex; flex-direction: column; gap: 8px; max-width: 320px;
+  }
+  .toast {
+    background: var(--surface); border: 1px solid var(--border);
+    border-left: 3px solid var(--accent); border-radius: 10px;
+    padding: 10px 14px; font-size: 13.5px;
+    box-shadow: 0 6px 20px rgba(0,0,0,.3);
+    animation: slidein .25s ease;
+  }
+  .toast.good { border-left-color: var(--good); }
+  .toast.bad  { border-left-color: var(--critical); }
+  @keyframes slidein { from { transform: translateY(8px); opacity: 0; } }
+
+  footer { color: var(--muted); font-size: 12.5px; margin-top: 6px; }
+</style>
+</head>
+<body>
+<div class="wrap">
+
+  <header>
+    <span id="conn" class="dot" title="Connection"></span>
+    <div>
+      <h1>Swing Deck</h1>
+      <div class="botname" id="botname">&nbsp;</div>
+    </div>
+    <span id="mode" class="badge paper" hidden>Paper money</span>
+    <span class="spacer"></span>
+    <button class="chip" id="soundbtn" title="Toggle sound alerts">🔊 Sound on</button>
+    <button class="chip" id="themebtn" title="Toggle theme">☀️ Light</button>
+    <button class="chip" id="logoutbtn" hidden>Log out</button>
+  </header>
+
+  <!-- login -->
+  <div id="login" class="card">
+    <h2>Connect to your bot</h2>
+    <label for="f-url">Bot address</label>
+    <input id="f-url" value="http://127.0.0.1:8080" autocomplete="off">
+    <label for="f-user">Username</label>
+    <input id="f-user" value="rob" autocomplete="username">
+    <label for="f-pass">Password</label>
+    <input id="f-pass" type="password" autocomplete="current-password">
+    <button class="go" id="loginbtn">Connect</button>
+    <div class="err" id="loginerr"></div>
+    <div class="hint">
+      Your password is in <code>user_data\config-private.json</code>
+      (created automatically when you start the bot). The bot must be
+      running — double-click <code>4-start-dryrun.bat</code> first.
+    </div>
+  </div>
+
+  <!-- dashboard -->
+  <div id="app" hidden>
+    <div class="tiles">
+      <div class="tile"><div class="k">Total P&amp;L (closed)</div><div class="v" id="t-total">—</div><div class="s" id="t-totalpct">&nbsp;</div></div>
+      <div class="tile"><div class="k">Today</div><div class="v" id="t-today">—</div><div class="s" id="t-todayn">&nbsp;</div></div>
+      <div class="tile"><div class="k">Paper wallet</div><div class="v" id="t-wallet">—</div><div class="s" id="t-curr">&nbsp;</div></div>
+      <div class="tile"><div class="k">Open trades</div><div class="v" id="t-open">—</div><div class="s" id="t-openmax">&nbsp;</div></div>
+      <div class="tile"><div class="k">Win rate</div><div class="v" id="t-win">—</div><div class="s" id="t-winn">&nbsp;</div></div>
+    </div>
+
+    <div class="card">
+      <h2>Daily profit — last 30 days</h2>
+      <div id="chartbox">
+        <svg id="chart" role="img" aria-label="Daily profit bar chart"></svg>
+        <div id="tip"><div class="t1"></div><div class="t2"></div></div>
+      </div>
+    </div>
+
+    <div class="card">
+      <h2>Open trades</h2>
+      <div class="scroll"><table id="opentbl">
+        <thead><tr><th>Pair</th><th class="num">Entry</th><th class="num">Now</th><th class="num">P&amp;L</th><th>Opened</th></tr></thead>
+        <tbody></tbody>
+      </table></div>
+      <div class="empty" id="openempty" hidden>No open trades — the bot is waiting for a setup.</div>
+    </div>
+
+    <div class="card">
+      <h2>Recent closed trades</h2>
+      <div class="scroll"><table id="closedtbl">
+        <thead><tr><th>Pair</th><th class="num">P&amp;L</th><th class="num">%</th><th>Held</th><th>Closed</th></tr></thead>
+        <tbody></tbody>
+      </table></div>
+      <div class="empty" id="closedempty" hidden>No closed trades yet.</div>
+    </div>
+
+    <footer id="foot">&nbsp;</footer>
+  </div>
+
+</div>
+<div id="toasts"></div>
+
+<script>
+"use strict";
+/* ================= state ================= */
+const S = {
+  url: localStorage.getItem("sd-url") || "http://127.0.0.1:8080",
+  user: localStorage.getItem("sd-user") || "rob",
+  pass: sessionStorage.getItem("sd-pass") || "",
+  access: "", refresh: "",
+  stake: "USD",
+  connected: null,          // null = never, true/false after first poll
+  prevOpen: null,           // Set of open trade_ids from previous poll
+  timer: null,
+};
+const $ = (id) => document.getElementById(id);
+const fmtUsd = (v, curr) => {
+  if (v === null || v === undefined || isNaN(v)) return "—";
+  const sign = v < 0 ? "−" : (v > 0 ? "+" : "");
+  return sign + "$" + Math.abs(v).toFixed(2) + (curr && curr !== "USD" ? " " + curr : "");
+};
+const fmtPct = (v) => (v === null || v === undefined || isNaN(v)) ? "—"
+  : (v < 0 ? "−" : "+") + Math.abs(v).toFixed(2) + "%";
+const cls = (v) => v > 0 ? "up" : (v < 0 ? "down" : "");
+const arrow = (v) => v > 0 ? "▲ " : (v < 0 ? "▼ " : "");
+
+/* ================= theme ================= */
+function applyTheme(t) {
+  document.documentElement.dataset.theme = t;
+  $("themebtn").textContent = t === "dark" ? "☀️ Light" : "🌙 Dark";
+  localStorage.setItem("sd-theme", t);
+}
+applyTheme(localStorage.getItem("sd-theme") ||
+  (matchMedia("(prefers-color-scheme: light)").matches ? "light" : "dark"));
+$("themebtn").onclick = () => {
+  applyTheme(document.documentElement.dataset.theme === "dark" ? "light" : "dark");
+  drawChart(lastDaily);   // repaint chart in new palette
+};
+
+/* ================= sound (Web Audio, all synthesized) ================= */
+let muted = localStorage.getItem("sd-muted") === "1";
+let actx = null;
+function audio() {
+  if (!actx) actx = new (window.AudioContext || window.webkitAudioContext)();
+  if (actx.state === "suspended") actx.resume();
+  return actx;
+}
+function note(freq, at, dur, type, vol) {
+  const ctx = audio(), o = ctx.createOscillator(), g = ctx.createGain();
+  o.type = type || "sine"; o.frequency.value = freq;
+  const t0 = ctx.currentTime + at;
+  g.gain.setValueAtTime(0.0001, t0);
+  g.gain.exponentialRampToValueAtTime(vol || 0.12, t0 + 0.015);
+  g.gain.exponentialRampToValueAtTime(0.0001, t0 + dur);
+  o.connect(g).connect(ctx.destination);
+  o.start(t0); o.stop(t0 + dur + 0.05);
+}
+const SOUNDS = {
+  connect:    () => { note(784, 0, .12); },
+  disconnect: () => { note(220, 0, .25, "triangle"); note(165, .18, .3, "triangle"); },
+  entry:      () => { note(659, 0, .14); note(880, .13, .2); },
+  win:        () => { note(523, 0, .12); note(659, .1, .12); note(784, .2, .12); note(1047, .3, .28); },
+  loss:       () => { note(330, 0, .2, "triangle"); note(247, .18, .35, "triangle"); },
+};
+function play(name) { if (!muted) try { SOUNDS[name](); } catch (e) {} }
+function setMuteBtn() { $("soundbtn").textContent = muted ? "🔇 Muted" : "🔊 Sound on"; }
+setMuteBtn();
+$("soundbtn").onclick = () => {
+  muted = !muted;
+  localStorage.setItem("sd-muted", muted ? "1" : "0");
+  setMuteBtn();
+  if (!muted) play("connect");   // audible confirmation
+};
+
+/* ================= toasts ================= */
+function toast(msg, kind) {
+  const el = document.createElement("div");
+  el.className = "toast" + (kind ? " " + kind : "");
+  el.textContent = msg;
+  $("toasts").appendChild(el);
+  setTimeout(() => el.remove(), 8000);
+}
+
+/* ================= API client ================= */
+async function apiLogin() {
+  const r = await fetch(S.url + "/api/v1/token/login", {
+    method: "POST",
+    headers: { Authorization: "Basic " + btoa(S.user + ":" + S.pass) },
+  });
+  if (!r.ok) throw new Error(r.status === 401 ? "Wrong username or password." : "Login failed (HTTP " + r.status + ").");
+  const j = await r.json();
+  S.access = j.access_token; S.refresh = j.refresh_token;
+}
+async function api(path, retried) {
+  const r = await fetch(S.url + "/api/v1" + path, {
+    headers: { Authorization: "Bearer " + S.access },
+  });
+  if (r.status === 401 && !retried) {      // token expired (15 min) → re-login
+    await apiLogin();
+    return api(path, true);
+  }
+  if (!r.ok) throw new Error("HTTP " + r.status + " on " + path);
+  return r.json();
+}
+
+/* ================= login flow ================= */
+$("f-url").value = S.url; $("f-user").value = S.user;
+$("loginbtn").onclick = doLogin;
+$("f-pass").addEventListener("keydown", e => { if (e.key === "Enter") doLogin(); });
+async function doLogin() {
+  S.url = $("f-url").value.trim().replace(/\/+$/, "");
+  S.user = $("f-user").value.trim();
+  S.pass = $("f-pass").value;
+  $("loginerr").textContent = "";
+  audio();                                  // unlock audio on this user gesture
+  try {
+    await apiLogin();
+  } catch (e) {
+    $("loginerr").textContent = /Failed to fetch/.test(e.message)
+      ? "Can't reach the bot. Is 4-start-dryrun.bat running?"
+      : e.message;
+    return;
+  }
+  localStorage.setItem("sd-url", S.url);
+  localStorage.setItem("sd-user", S.user);
+  sessionStorage.setItem("sd-pass", S.pass);
+  enterApp();
+}
+function enterApp() {
+  $("login").hidden = true; $("app").hidden = false; $("logoutbtn").hidden = false;
+  loadStatic(); poll();
+  S.timer = setInterval(poll, 10000);
+}
+$("logoutbtn").onclick = () => {
+  clearInterval(S.timer);
+  sessionStorage.removeItem("sd-pass");
+  location.reload();
+};
+
+/* ================= data ================= */
+async function loadStatic() {
+  try {
+    const c = await api("/show_config");
+    $("botname").textContent = (c.bot_name || "freqtrade") + " · " + (c.strategy || "") +
+      " · " + (c.timeframe || "") + " · " + (c.exchange || "");
+    S.stake = c.stake_currency || "USD";
+    $("t-curr").textContent = S.stake + " (dry-run)";
+    const m = $("mode"); m.hidden = false;
+    if (c.dry_run === false) { m.textContent = "LIVE MONEY"; m.className = "badge live"; }
+    else { m.textContent = "Paper money"; m.className = "badge paper"; }
+  } catch (e) { /* non-fatal; retried implicitly next session */ }
+}
+
+let lastDaily = null;
+async function poll() {
+  let status, profit, balance, daily, closed;
+  try {
+    [status, profit, balance, daily, closed] = await Promise.all([
+      api("/status"), api("/profit"), api("/balance"),
+      api("/daily?timescale=30"), api("/trades?limit=10&order_by_id=false"),
+    ]);
+  } catch (e) {
+    setConn(false);
+    return;
+  }
+  setConn(true);
+  renderTiles(status, profit, balance);
+  renderToday(daily);
+  lastDaily = daily; drawChart(daily);
+  renderOpen(status);
+  renderClosed(closed);
+  detectEvents(status, closed);
+  $("foot").textContent = "Updated " + new Date().toLocaleTimeString() +
+    " · refreshes every 10 s · " + S.url;
+}
+function setConn(ok) {
+  const was = S.connected;
+  S.connected = ok;
+  $("conn").className = "dot " + (ok ? "ok" : "bad");
+  if (was === null && ok) play("connect");
+  if (was === true && !ok) { play("disconnect"); toast("Lost connection to the bot.", "bad"); }
+  if (was === false && ok) { play("connect"); toast("Reconnected to the bot.", "good"); }
+}
+
+/* --- helpers over freqtrade's response shapes (with version fallbacks) --- */
+const tradePct = (t) => t.profit_pct ?? t.current_profit_pct ??
+  ((t.profit_ratio ?? t.current_profit) != null ? (t.profit_ratio ?? t.current_profit) * 100 : null);
+const tradeAbs = (t) => t.profit_abs ?? t.current_profit_abs ?? null;
+
+function renderTiles(status, profit, balance) {
+  const totAbs = profit.profit_closed_coin ?? profit.profit_all_coin;
+  const totPct = profit.profit_closed_percent ?? profit.profit_closed_percent_sum;
+  $("t-total").textContent = fmtUsd(totAbs, S.stake);
+  $("t-total").className = "v " + cls(totAbs);
+  $("t-totalpct").textContent = totPct != null ? arrow(totPct) + fmtPct(totPct) + " of wallet" : " ";
+  $("t-totalpct").className = "s " + cls(totPct);
+
+  const openPnl = status.reduce((a, t) => a + (tradeAbs(t) || 0), 0);
+  $("t-open").textContent = String(status.length);
+  $("t-openmax").textContent = status.length
+    ? "unrealized " + fmtUsd(openPnl, "") : "of 4 slots used";
+  $("t-openmax").className = "s " + cls(openPnl);
+
+  const wallet = balance.total_bot ?? balance.total ?? null;
+  $("t-wallet").textContent = wallet != null ? "$" + Number(wallet).toFixed(2) : "—";
+
+  const wins = profit.winning_trades ?? 0, n = profit.closed_trade_count ?? profit.trade_count;
+  if (n) {
+    $("t-win").textContent = Math.round((wins / n) * 100) + "%";
+    $("t-winn").textContent = wins + " of " + n + " closed";
+  } else { $("t-win").textContent = "—"; $("t-winn").textContent = "no closed trades yet"; }
+}
+
+function renderToday(daily) {
+  const row = daily && daily.data && daily.data[0];   // API returns newest first
+  if (!row) return;
+  const v = row.abs_profit ?? 0;
+  $("t-today").textContent = fmtUsd(v, "");
+  $("t-today").className = "v " + cls(v);
+  $("t-todayn").textContent = (row.trade_count || 0) + " trade" +
+    (row.trade_count === 1 ? "" : "s") + " closed today";
+}
+
+/* --- daily chart: signed bars, zero baseline, hover tooltip --- */
+function drawChart(daily) {
+  if (!daily || !daily.data) return;
+  const rows = daily.data.slice().reverse();      // API returns newest first
+  const svg = $("chart"), tipEl = $("tip");
+  const W = svg.clientWidth || 900, H = 190, padT = 12, padB = 22;
+  svg.setAttribute("viewBox", "0 0 " + W + " " + H);
+  const vals = rows.map(r => r.abs_profit ?? 0);
+  const max = Math.max(0.01, ...vals.map(Math.abs));
+  const y0 = padT + (H - padT - padB) / 2;        // zero line mid-chart
+  const scale = (H - padT - padB) / 2 / max;
+  const css = getComputedStyle(document.documentElement);
+  const cGood = css.getPropertyValue("--delta-up").trim();
+  const cBad  = css.getPropertyValue("--critical").trim();
+  const cBase = css.getPropertyValue("--baseline").trim();
+  const cMut  = css.getPropertyValue("--muted").trim();
+  const n = rows.length, slot = W / n, bw = Math.max(4, Math.min(20, slot - 2));
+  let g = `<line x1="0" y1="${y0}" x2="${W}" y2="${y0}" stroke="${cBase}" stroke-width="1"/>`;
+  rows.forEach((r, i) => {
+    const v = vals[i], h = Math.abs(v) * scale;
+    const x = i * slot + (slot - bw) / 2;
+    const y = v >= 0 ? y0 - h : y0;
+    if (h > 0.5) g += `<rect x="${x.toFixed(1)}" y="${y.toFixed(1)}" width="${bw.toFixed(1)}" height="${h.toFixed(1)}" rx="2" fill="${v >= 0 ? cGood : cBad}"/>`;
+    else g += `<rect x="${x.toFixed(1)}" y="${y0 - 1}" width="${bw.toFixed(1)}" height="2" rx="1" fill="${cBase}"/>`;
+    // invisible full-height hover target, larger than the mark
+    g += `<rect class="hit" data-i="${i}" x="${(i * slot).toFixed(1)}" y="0" width="${slot.toFixed(1)}" height="${H}" fill="transparent"/>`;
+    if (i === 0 || i === n - 1) {
+      const d = new Date(r.date + "T00:00:00");
+      g += `<text x="${(i * slot + slot / 2).toFixed(1)}" y="${H - 6}" font-size="11" fill="${cMut}" text-anchor="middle" font-family="system-ui">${d.getMonth() + 1}/${d.getDate()}</text>`;
+    }
+  });
+  svg.innerHTML = g;
+  svg.querySelectorAll(".hit").forEach(hit => {
+    hit.addEventListener("mousemove", (e) => {
+      const i = +hit.dataset.i, r = rows[i], v = vals[i];
+      tipEl.querySelector(".t1").textContent =
+        new Date(r.date + "T00:00:00").toLocaleDateString() +
+        " · " + (r.trade_count || 0) + " trade" + (r.trade_count === 1 ? "" : "s");
+      const t2 = tipEl.querySelector(".t2");
+      t2.textContent = fmtUsd(v, S.stake);
+      t2.className = "t2 " + cls(v);
+      tipEl.style.display = "block";
+      const box = $("chartbox").getBoundingClientRect();
+      let lx = e.clientX - box.left + 14;
+      if (lx + tipEl.offsetWidth > box.width) lx = e.clientX - box.left - tipEl.offsetWidth - 14;
+      tipEl.style.left = lx + "px";
+      tipEl.style.top = (e.clientY - box.top - 10) + "px";
+    });
+    hit.addEventListener("mouseleave", () => { tipEl.style.display = "none"; });
+  });
+}
+
+function ago(iso) {
+  if (!iso) return "";
+  const ms = Date.now() - new Date(iso).getTime();
+  const h = Math.floor(ms / 3.6e6), d = Math.floor(h / 24);
+  if (d >= 1) return d + "d " + (h - d * 24) + "h";
+  if (h >= 1) return h + "h " + Math.floor((ms % 3.6e6) / 6e4) + "m";
+  return Math.max(1, Math.floor(ms / 6e4)) + "m";
+}
+function renderOpen(status) {
+  const tb = $("opentbl").querySelector("tbody");
+  tb.innerHTML = "";
+  $("openempty").hidden = status.length > 0;
+  status.forEach(t => {
+    const pct = tradePct(t), abs = tradeAbs(t);
+    const tr = document.createElement("tr");
+    tr.innerHTML =
+      `<td><strong>${t.pair}</strong></td>` +
+      `<td class="num">${(t.open_rate ?? 0).toFixed(4)}</td>` +
+      `<td class="num">${(t.current_rate ?? 0).toFixed(4)}</td>` +
+      `<td class="num ${cls(pct)}">${arrow(pct)}${fmtPct(pct)}${abs != null ? " (" + fmtUsd(abs, "") + ")" : ""}</td>` +
+      `<td>${ago(t.open_date)} ago</td>`;
+    tb.appendChild(tr);
+  });
+}
+function renderClosed(closed) {
+  const list = (closed.trades || []).filter(t => !t.is_open);
+  const tb = $("closedtbl").querySelector("tbody");
+  tb.innerHTML = "";
+  $("closedempty").hidden = list.length > 0;
+  list.slice(0, 8).forEach(t => {
+    const pct = t.close_profit_pct ?? (t.close_profit != null ? t.close_profit * 100 : null);
+    const abs = t.close_profit_abs ?? t.profit_abs;
+    const held = (t.open_date && t.close_date)
+      ? Math.round((new Date(t.close_date) - new Date(t.open_date)) / 3.6e6) + "h" : "";
+    const tr = document.createElement("tr");
+    tr.innerHTML =
+      `<td><strong>${t.pair}</strong></td>` +
+      `<td class="num ${cls(abs)}">${fmtUsd(abs, "")}</td>` +
+      `<td class="num ${cls(pct)}">${arrow(pct)}${fmtPct(pct)}</td>` +
+      `<td>${held}</td>` +
+      `<td>${t.close_date ? new Date(t.close_date).toLocaleString() : ""}</td>`;
+    tb.appendChild(tr);
+  });
+}
+
+/* --- event detection: compare open-trade ids between polls --- */
+function detectEvents(status, closed) {
+  const now = new Set(status.map(t => t.trade_id));
+  if (S.prevOpen !== null) {
+    for (const t of status) {
+      if (!S.prevOpen.has(t.trade_id)) {
+        play("entry");
+        toast("Entered " + t.pair + " @ " + (t.open_rate ?? 0).toFixed(4));
+      }
+    }
+    for (const id of S.prevOpen) {
+      if (!now.has(id)) {
+        const t = (closed.trades || []).find(x => x.trade_id === id);
+        const abs = t ? (t.close_profit_abs ?? t.profit_abs ?? 0) : 0;
+        if (abs >= 0) { play("win");  toast("Closed " + (t ? t.pair : "trade") + " " + fmtUsd(abs, "") + " ✓", "good"); }
+        else          { play("loss"); toast("Closed " + (t ? t.pair : "trade") + " " + fmtUsd(abs, ""), "bad"); }
+      }
+    }
+  }
+  S.prevOpen = now;
+}
+
+/* auto-reconnect if we have a session password from this browser session */
+if (S.pass) { $("f-pass").value = S.pass; doLogin(); }
+</script>
+</body>
+</html>

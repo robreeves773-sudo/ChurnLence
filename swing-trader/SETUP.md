@@ -24,7 +24,7 @@ freqtrade install-ui
 That's it. (Or just tell Claude Code: "Read CLAUDE.md and run Phase 1" and
 it will do and verify all of this for you.)
 
-## Daily driving — the 4 buttons
+## Daily driving — the 5 buttons
 Double-click these in the `scripts` folder:
 
 | Script | What it does |
@@ -33,10 +33,24 @@ Double-click these in the `scripts` folder:
 | `2-get-data.bat` | Pulls the latest 120 days of Kraken price data |
 | `3-backtest.bat` | Tests the strategy against that data, prints a report |
 | `4-start-dryrun.bat` | Starts the paper-trading bot (leave the window open) |
+| `5-dashboard.bat` | Opens **Swing Deck** — your at-a-glance dashboard with sound |
 
-While the bot runs, open **http://127.0.0.1:8080** in your browser.
-Login: user `rob`, password is in `user_data/config.json` under
-`api_server.password`. That's your dashboard: open trades, profit, history.
+## Your two dashboards
+- **Swing Deck** (`5-dashboard.bat`, http://127.0.0.1:8082) — built for
+  glancing: big P&L tiles, a 30-day daily profit chart, open/closed trades,
+  dark & light themes, and **sound alerts** — a chime when the bot enters a
+  trade, a rising arpeggio on a winning close, a low tone on a losing one.
+  Leave it open on a second monitor and you'll *hear* the bot work. The 🔊
+  button mutes it; ☀️/🌙 flips the theme.
+- **FreqUI** (http://127.0.0.1:8080, while the bot runs) — Freqtrade's full
+  control room: candlestick charts with your strategy's buy/sell markers,
+  and pause/stop controls. Use it when you want to dig in.
+
+**Password for both:** the first time you start the bot, a file
+`user_data\config-private.json` is created with your personal random
+password (it's also printed in the black window). Username is `rob`. These
+secrets live only on your PC — they are never uploaded anywhere, and each
+machine generates its own.
 
 ## The rules that keep you safe
 1. **Dry-run stays ON.** `"dry_run": true` in config.json means fake money.

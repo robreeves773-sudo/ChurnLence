@@ -1,6 +1,17 @@
 # claude.md — Project State: swing-trader
 
 ## Research Log
+- 2026-08-18 (UI/security pass): FreqUI confirmed to ship light+dark themes
+  but NO sound alerts (freqtrade/frequi repo + docs review) → built "Swing
+  Deck" companion dashboard (dashboard/index.html, served by
+  5-dashboard.bat on :8082): P&L tiles, 30-day daily-profit chart, open/
+  closed trade tables, dark/light themes, Web-Audio-synthesized alerts
+  (entry chime, win arpeggio, loss tone, disconnect warning). Validated
+  headless (Chromium + mocked REST API): zero console errors, both themes
+  screenshot-checked. Security: dashboard secrets rotated AND moved out of
+  git into user_data/config-private.json (gitignored, auto-generated per
+  machine by scripts/make_private_config.py; bot starts with two --config
+  flags so the private file overrides placeholders in config.json).
 - 2026-08-18 (built by Claude chat): Freqtrade 2026.7 confirmed latest-line
   and installed cleanly. Kraken lists all four targets: LINKUSD, SOLUSD,
   XXRPZUSD (XRP/USD), ZBCNUSD (verified via /0/public/AssetPairs, 1431
@@ -30,7 +41,9 @@
   in 4h uptrends across all four pairs.
 
 ## Next Steps
-1. Rob: unzip package to D:\Projects\swing-trader, follow SETUP.md.
+0. Rob: make the GitHub repo private (Settings → General → Danger Zone →
+   Change visibility) — old dashboard secrets existed in early git history.
+1. Rob: clone/pull repo to D:\Projects\swing-trader, follow SETUP.md.
 2. Claude Code: Phase 0 research → Phase 1 verification.
 3. Claude Code: Phase 2 deep data download (2+ years, overnight job).
 4. Claude Code: Phase 3 hyperopt + walk-forward validation; log to

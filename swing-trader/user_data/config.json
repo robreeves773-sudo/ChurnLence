@@ -61,11 +61,14 @@
         "listen_port": 8080,
         "verbosity": "error",
         "enable_openapi": false,
-        "jwt_secret_key": "c936b934c69fc17d50ea6d237626d055dc326751f238e1f10ff6e9fd2bb22ad7",
-        "ws_token": "52422b535b7471a2dd4e7108aac40ea2",
-        "CORS_origins": [],
+        "jwt_secret_key": "OVERRIDDEN-BY-config-private.json",
+        "ws_token": "OVERRIDDEN-BY-config-private.json",
+        "CORS_origins": [
+            "http://127.0.0.1:8082",
+            "http://localhost:8082"
+        ],
         "username": "rob",
-        "password": "SwingTrader-d88807b4"
+        "password": "OVERRIDDEN-BY-config-private.json"
     },
     "bot_name": "swing-trader",
     "initial_state": "running",
