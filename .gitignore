@@ -1,0 +1,5 @@
+__pycache__/
+*.pyc
+swing-trader/logs/*
+!swing-trader/logs/.gitkeep
+swing-trader/user_data/data/
