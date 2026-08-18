@@ -4,7 +4,10 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>Swing Deck</title>
-<link rel="icon" href="data:image/svg+xml,<svg xmlns=%22http://www.w3.org/2000/svg%22 viewBox=%220 0 100 100%22><text y=%22.9em%22 font-size=%2290%22>📈</text></svg>">
+<link rel="icon" href="icon.svg" type="image/svg+xml">
+<link rel="apple-touch-icon" href="apple-touch-icon.png">
+<link rel="manifest" href="manifest.json">
+<meta name="theme-color" content="#0d0d0d">
 <style>
   /* ---- theme tokens (dark is the base: this is a trading desk) ---- */
   :root {
@@ -109,7 +112,7 @@
   }
   td {
     padding: 8px 10px; border-bottom: 1px solid var(--grid);
-    font-variant-numeric: tabular-nums;
+    font-variant-numeric: tabular-nums; white-space: nowrap;
   }
   tr:last-child td { border-bottom: none; }
   td.num, th.num { text-align: right; }
@@ -162,6 +165,24 @@
   @keyframes slidein { from { transform: translateY(8px); opacity: 0; } }
 
   footer { color: var(--muted); font-size: 12.5px; margin-top: 6px; }
+
+  /* ---- phone layout ---- */
+  @media (max-width: 640px) {
+    .wrap { padding: 12px 12px 40px; }
+    header { flex-wrap: wrap; row-gap: 8px; padding-bottom: 12px; }
+    h1 { font-size: 18px; }
+    .botname { font-size: 12px; }
+    button.chip { padding: 8px 10px; font-size: 12.5px; }
+    .tiles { gap: 10px; grid-template-columns: repeat(2, 1fr); }
+    .tile { padding: 12px 14px 10px; }
+    .tile .v { font-size: 22px; }
+    .card { padding: 14px 14px; border-radius: 10px; }
+    #chart { height: 150px; }
+    table { font-size: 13px; }
+    td, th { padding-left: 6px; padding-right: 6px; }
+    #login { margin-top: 24px; }
+    #toasts { left: 12px; right: 12px; max-width: none; }
+  }
 </style>
 </head>
 <body>
@@ -184,7 +205,7 @@
   <div id="login" class="card">
     <h2>Connect to your bot</h2>
     <label for="f-url">Bot address</label>
-    <input id="f-url" value="http://127.0.0.1:8080" autocomplete="off">
+    <input id="f-url" value="" placeholder="Automatic (recommended)" autocomplete="off">
     <label for="f-user">Username</label>
     <input id="f-user" value="rob" autocomplete="username">
     <label for="f-pass">Password</label>
@@ -192,9 +213,11 @@
     <button class="go" id="loginbtn">Connect</button>
     <div class="err" id="loginerr"></div>
     <div class="hint">
-      Your password is in <code>user_data\config-private.json</code>
-      (created automatically when you start the bot). The bot must be
+      Your password is in <code>user_data\config-private.json</code> on the
+      PC (created automatically when you start the bot). The bot must be
       running — double-click <code>4-start-dryrun.bat</code> first.
+      On a phone: run <code>6-phone.bat</code> on the PC and open the
+      address it prints. Leave "Bot address" on Automatic.
     </div>
   </div>
 
@@ -244,7 +267,9 @@
 "use strict";
 /* ================= state ================= */
 const S = {
-  url: localStorage.getItem("sd-url") || "http://127.0.0.1:8080",
+  // "" = same origin as this page: the serve_deck.py proxy relays /api/* to
+  // the bot, which is what makes phone access work with zero configuration.
+  url: localStorage.getItem("sd-url") || "",
   user: localStorage.getItem("sd-user") || "rob",
   pass: sessionStorage.getItem("sd-pass") || "",
   access: "", refresh: "",
@@ -327,7 +352,10 @@ async function apiLogin() {
     method: "POST",
     headers: { Authorization: "Basic " + btoa(S.user + ":" + S.pass) },
   });
-  if (!r.ok) throw new Error(r.status === 401 ? "Wrong username or password." : "Login failed (HTTP " + r.status + ").");
+  if (!r.ok) throw new Error(
+    r.status === 401 ? "Wrong username or password." :
+    r.status === 502 ? "Can't reach the bot. Is 4-start-dryrun.bat running on the PC?" :
+    "Login failed (HTTP " + r.status + ").");
   const j = await r.json();
   S.access = j.access_token; S.refresh = j.refresh_token;
 }
@@ -411,7 +439,7 @@ async function poll() {
   renderClosed(closed);
   detectEvents(status, closed);
   $("foot").textContent = "Updated " + new Date().toLocaleTimeString() +
-    " · refreshes every 10 s · " + S.url;
+    " · refreshes every 10 s · " + (S.url || location.host);
 }
 function setConn(ok) {
   const was = S.connected;
@@ -493,26 +521,44 @@ function drawChart(daily) {
     }
   });
   svg.innerHTML = g;
+  let tipTimer = null;
+  function showTip(i, clientX, clientY) {
+    const r = rows[i], v = vals[i];
+    tipEl.querySelector(".t1").textContent =
+      new Date(r.date + "T00:00:00").toLocaleDateString() +
+      " · " + (r.trade_count || 0) + " trade" + (r.trade_count === 1 ? "" : "s");
+    const t2 = tipEl.querySelector(".t2");
+    t2.textContent = fmtUsd(v, S.stake);
+    t2.className = "t2 " + cls(v);
+    tipEl.style.display = "block";
+    const box = $("chartbox").getBoundingClientRect();
+    let lx = clientX - box.left + 14;
+    if (lx + tipEl.offsetWidth > box.width) lx = clientX - box.left - tipEl.offsetWidth - 14;
+    tipEl.style.left = Math.max(0, lx) + "px";
+    tipEl.style.top = (clientY - box.top - 10) + "px";
+  }
   svg.querySelectorAll(".hit").forEach(hit => {
-    hit.addEventListener("mousemove", (e) => {
-      const i = +hit.dataset.i, r = rows[i], v = vals[i];
-      tipEl.querySelector(".t1").textContent =
-        new Date(r.date + "T00:00:00").toLocaleDateString() +
-        " · " + (r.trade_count || 0) + " trade" + (r.trade_count === 1 ? "" : "s");
-      const t2 = tipEl.querySelector(".t2");
-      t2.textContent = fmtUsd(v, S.stake);
-      t2.className = "t2 " + cls(v);
-      tipEl.style.display = "block";
-      const box = $("chartbox").getBoundingClientRect();
-      let lx = e.clientX - box.left + 14;
-      if (lx + tipEl.offsetWidth > box.width) lx = e.clientX - box.left - tipEl.offsetWidth - 14;
-      tipEl.style.left = lx + "px";
-      tipEl.style.top = (e.clientY - box.top - 10) + "px";
+    hit.addEventListener("pointermove", (e) => {
+      if (e.pointerType === "mouse") showTip(+hit.dataset.i, e.clientX, e.clientY);
     });
-    hit.addEventListener("mouseleave", () => { tipEl.style.display = "none"; });
+    hit.addEventListener("pointerdown", (e) => {
+      showTip(+hit.dataset.i, e.clientX, e.clientY);
+      if (e.pointerType !== "mouse") {         // a tap: auto-hide after 3 s
+        clearTimeout(tipTimer);
+        tipTimer = setTimeout(() => { tipEl.style.display = "none"; }, 3000);
+      }
+    });
+    hit.addEventListener("pointerleave", (e) => {
+      if (e.pointerType === "mouse") tipEl.style.display = "none";
+    });
   });
 }
 
+function fmtWhen(iso) {
+  const d = new Date(iso);
+  return (d.getMonth() + 1) + "/" + d.getDate() + " " +
+    d.toLocaleTimeString([], { hour: "numeric", minute: "2-digit" });
+}
 function ago(iso) {
   if (!iso) return "";
   const ms = Date.now() - new Date(iso).getTime();
@@ -553,7 +599,7 @@ function renderClosed(closed) {
       `<td class="num ${cls(abs)}">${fmtUsd(abs, "")}</td>` +
       `<td class="num ${cls(pct)}">${arrow(pct)}${fmtPct(pct)}</td>` +
       `<td>${held}</td>` +
-      `<td>${t.close_date ? new Date(t.close_date).toLocaleString() : ""}</td>`;
+      `<td>${t.close_date ? fmtWhen(t.close_date) : ""}</td>`;
     tb.appendChild(tr);
   });
 }

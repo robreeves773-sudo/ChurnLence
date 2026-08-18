@@ -34,6 +34,7 @@ Double-click these in the `scripts` folder:
 | `3-backtest.bat` | Tests the strategy against that data, prints a report |
 | `4-start-dryrun.bat` | Starts the paper-trading bot (leave the window open) |
 | `5-dashboard.bat` | Opens **Swing Deck** — your at-a-glance dashboard with sound |
+| `6-phone.bat` | Same as 5, but also shares Swing Deck to your **phone** |
 
 ## Your two dashboards
 - **Swing Deck** (`5-dashboard.bat`, http://127.0.0.1:8082) — built for
@@ -45,6 +46,20 @@ Double-click these in the `scripts` folder:
 - **FreqUI** (http://127.0.0.1:8080, while the bot runs) — Freqtrade's full
   control room: candlestick charts with your strategy's buy/sell markers,
   and pause/stop controls. Use it when you want to dig in.
+
+## Swing Deck on your phone (3 steps)
+1. On the PC: bot running (`4-start-dryrun.bat`), then double-click
+   `6-phone.bat`. If Windows asks about the firewall, click **Allow**
+   (Private networks).
+2. On your phone (same Wi-Fi as the PC): type the `http://192.168...:8082`
+   address the black window shows into your browser, log in as `rob`.
+3. Optional but nice: in the browser menu tap **Add to Home Screen** —
+   Swing Deck becomes an app icon that opens full-screen.
+
+Notes: everything stays inside your home Wi-Fi — nothing is exposed to the
+internet, and the phone still needs your password. Sounds play while the
+page is open. If the address ever changes (router reboot), just rerun
+`6-phone.bat` and read the new one.
 
 **Password for both:** the first time you start the bot, a file
 `user_data\config-private.json` is created with your personal random

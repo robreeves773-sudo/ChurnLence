@@ -1,6 +1,16 @@
 # claude.md — Project State: swing-trader
 
 ## Research Log
+- 2026-08-18 (phone pass): Swing Deck now works on phones. New
+  scripts/serve_deck.py serves the dashboard AND proxies /api/* to the bot
+  (same-origin → no CORS config per device); 5-dashboard.bat uses it
+  localhost-only, new 6-phone.bat binds the LAN and prints the phone URL.
+  Dashboard: responsive phone layout, tap-to-tooltip on the chart (touch
+  pointerleave quirk fixed with 3s auto-hide), compact table dates, PWA
+  manifest + icons for Add-to-Home-Screen. Validated headless at iPhone
+  size THROUGH the proxy with a mocked bot API: zero console errors, tap
+  tooltip confirmed, zero horizontal overflow, both themes screenshot-
+  checked. LAN-only by design; auth unchanged (bot password + JWT).
 - 2026-08-18 (UI/security pass): FreqUI confirmed to ship light+dark themes
   but NO sound alerts (freqtrade/frequi repo + docs review) → built "Swing
   Deck" companion dashboard (dashboard/index.html, served by

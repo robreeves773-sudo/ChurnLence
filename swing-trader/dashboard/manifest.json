@@ -1,0 +1,13 @@
+{
+  "name": "Swing Deck",
+  "short_name": "Swing Deck",
+  "description": "Paper-trading swing bot dashboard",
+  "start_url": "/",
+  "display": "standalone",
+  "background_color": "#0d0d0d",
+  "theme_color": "#0d0d0d",
+  "icons": [
+    { "src": "icon.svg", "sizes": "any", "type": "image/svg+xml", "purpose": "any" },
+    { "src": "apple-touch-icon.png", "sizes": "180x180", "type": "image/png" }
+  ]
+}

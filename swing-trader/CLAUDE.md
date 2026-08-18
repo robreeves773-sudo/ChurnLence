@@ -74,11 +74,12 @@ backtests get 2+ years:
 
 ## PHASE 4 — DRY-RUN OPERATIONS
 - Start: scripts/4-start-dryrun.bat (FreqUI at http://127.0.0.1:8080).
-- Glanceable view: scripts/5-dashboard.bat serves dashboard/index.html
-  ("Swing Deck", http://127.0.0.1:8082) — themed tiles/chart plus sound
-  alerts on trade entry/exit. It talks to the bot's REST API from origin
-  :8082, which is whitelisted in config.json CORS_origins; keep both in
-  sync if a port ever changes.
+- Glanceable view: scripts/5-dashboard.bat runs scripts/serve_deck.py,
+  which serves dashboard/index.html ("Swing Deck", :8082) AND proxies
+  /api/* to the bot on :8080 — same-origin, so no CORS involved.
+  scripts/6-phone.bat is the same server bound to the LAN (0.0.0.0) for
+  phones on home Wi-Fi; auth still enforced by the bot. NEVER suggest
+  port-forwarding or exposing either port to the internet.
 - Weekly: summarize dry-run trades vs backtest expectations in claude.md.
 - 30+ days of dry-run data = review meeting with Rob. Compare live-paper
   results to backtest. Only Rob decides anything after that.
