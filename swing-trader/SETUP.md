@@ -43,6 +43,18 @@ Double-click these in the `scripts` folder:
   trade, a rising arpeggio on a winning close, a low tone on a losing one.
   Leave it open on a second monitor and you'll *hear* the bot work. The 🔊
   button mutes it; ☀️/🌙 flips the theme.
+
+  The **📊 Chart** button opens a full candlestick chart (TradingView's
+  open-source engine) for any of your four pairs, with the bot's own EMA20/
+  EMA50 lines and BOT arrows where the strategy signaled. It automatically
+  marks **proven candlestick patterns** — engulfing, morning/evening star,
+  hammer, soldiers/crows and more — each labeled with its measured success
+  rate from Bulkowski's studies (tick them on/off at the bottom; tap one for
+  a plain-English explanation). The left toolbar lets you **draw on the
+  chart**: ─ price levels, ╱ trendlines, ▭ zones. Use ⌖ to select, drag, and
+  move them; 🗑 deletes; drawings are saved per pair and survive restarts.
+  Honest note: even the best candle patterns are context, not certainty —
+  the percentages are shown so you can weigh them yourself.
 - **FreqUI** (http://127.0.0.1:8080, while the bot runs) — Freqtrade's full
   control room: candlestick charts with your strategy's buy/sell markers,
   and pause/stop controls. Use it when you want to dig in.

@@ -1,6 +1,22 @@
 # claude.md — Project State: swing-trader
 
 ## Research Log
+- 2026-08-18 (chart/patterns pass): Research → proven path chosen:
+  TradingView's open-source lightweight-charts (v4.2.3, vendored into
+  dashboard/vendor/, works offline; v5 has a breaking API — stay pinned)
+  for candles; TA-Lib-style rules for 10 classic patterns scored with
+  Bulkowski's measured reversal rates (engulfing bear 79%, morning star
+  ~78%, 3BC 78%, evening star 72%, 3WS 70%, engulf bull 63%, hammer 60%
+  w/confirmation, SS 59%, harami 54%, doji ~50% — most patterns alone are
+  near a coin flip; strong ones need trend+volume context). Built
+  dashboard/chart.html: candles + volume + strategy's own ema20/ema50 and
+  BOT signal arrows from /pair_candles, pattern markers with per-pattern
+  toggles and plain-English notes, and a drawing toolbar (levels,
+  trendlines, zones; select/move/delete; saved per pair in localStorage).
+  patterns.js has 12 unit tests (dashboard/patterns.test.js, node) — they
+  caught a real bug: trend context must be measured BEFORE the pattern,
+  not at the signal candle. Validated headless desktop+phone via the
+  proxy: drawings persist across reload, zero console errors.
 - 2026-08-18 (phone pass): Swing Deck now works on phones. New
   scripts/serve_deck.py serves the dashboard AND proxies /api/* to the bot
   (same-origin → no CORS config per device); 5-dashboard.bat uses it

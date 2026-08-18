@@ -80,6 +80,12 @@ backtests get 2+ years:
   scripts/6-phone.bat is the same server bound to the LAN (0.0.0.0) for
   phones on home Wi-Fi; auth still enforced by the bot. NEVER suggest
   port-forwarding or exposing either port to the internet.
+- Chart page: dashboard/chart.html (vendored lightweight-charts 4.2.3 in
+  dashboard/vendor/ — keep pinned; v5 changed the API). Candles come from
+  GET /pair_candles (includes the strategy's ema20/ema50/enter_long
+  columns). Pattern detection lives in dashboard/patterns.js with unit
+  tests; if you change a rule, keep the Bulkowski percentages honest and
+  the trend context measured BEFORE the pattern, not at the signal candle.
 - Weekly: summarize dry-run trades vs backtest expectations in claude.md.
 - 30+ days of dry-run data = review meeting with Rob. Compare live-paper
   results to backtest. Only Rob decides anything after that.

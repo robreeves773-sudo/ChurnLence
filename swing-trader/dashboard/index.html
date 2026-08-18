@@ -73,12 +73,13 @@
   .badge.paper { color: var(--good); border: 1px solid var(--good); }
   .badge.live  { color: #fff; background: var(--critical); }
   .spacer { flex: 1; }
-  button.chip {
+  button.chip, a.chip {
     background: var(--surface); color: var(--ink-2);
     border: 1px solid var(--border); border-radius: 8px;
     padding: 7px 12px; font: inherit; font-size: 13px; cursor: pointer;
+    text-decoration: none; display: inline-block;
   }
-  button.chip:hover { color: var(--ink); border-color: var(--muted); }
+  button.chip:hover, a.chip:hover { color: var(--ink); border-color: var(--muted); }
 
   /* ---- cards & tiles ---- */
   .card {
@@ -196,6 +197,7 @@
     </div>
     <span id="mode" class="badge paper" hidden>Paper money</span>
     <span class="spacer"></span>
+    <a class="chip" href="chart.html" title="Candlestick chart with patterns and drawing tools">📊 Chart</a>
     <button class="chip" id="soundbtn" title="Toggle sound alerts">🔊 Sound on</button>
     <button class="chip" id="themebtn" title="Toggle theme">☀️ Light</button>
     <button class="chip" id="logoutbtn" hidden>Log out</button>
